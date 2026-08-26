@@ -1,0 +1,11 @@
+{
+    "cmd_id": "get_full_body_sensor_001",
+    "cmd_type": "GET_FULL_BODY_SENSOR_STATES",
+    "params": {
+        "robot_id": "robot_a",
+        "hand": null
+    },
+    "extra": {
+        "description": "聚合查询：上肢关节 + 手部关节 + 手指压力；hand 可选(left/right/null 双手)"
+    }
+}

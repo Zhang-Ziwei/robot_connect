@@ -1,0 +1,42 @@
+# ARM64 Mock ROS Bridge Docker镜像
+# 镜像内置 3 个 mock 程序，容器启动后默认进入 bash，
+# 由运行方手动选择启动哪一个（详见 README.md）。
+
+FROM --platform=linux/arm64 condaforge/miniforge3:latest
+
+# ---- 基础环境 ----
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+# 让 python print 实时刷新，便于 docker logs 查看
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# ---- conda 环境 ----
+RUN conda create -n rosbridge python=3.9 -y && \
+    conda clean -afy
+# 后续 RUN 指令都在 rosbridge 环境中执行
+SHELL ["conda", "run", "-n", "rosbridge", "/bin/bash", "-c"]
+
+# ---- Python 依赖 ----
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ---- 源代码 ----
+COPY . .
+
+# ---- 常用端口（按需映射） ----
+# 9090: mock_chem_project_action_server.py 默认端口，也是真实 rosbridge 的默认端口
+# 9091: mock_rosbridge_server.py 默认端口（老的 service-based mock）
+# 9092: mock_navigation_action_server.py 惯用端口
+EXPOSE 9090 9091 9092
+
+# ---- 默认入口 ----
+# 默认进入 bash，容器不自动执行程序；使用方按需启动：
+#   conda activate rosbridge
+#   python mock_rosbridge_server.py
+#   python mock_chem_project_action_server.py --port 9090
+#   python mock_navigation_action_server.py
+# 或在 docker run 时用 --entrypoint / 末尾附参数覆盖 CMD（参见 README）。
+CMD ["/bin/bash"]

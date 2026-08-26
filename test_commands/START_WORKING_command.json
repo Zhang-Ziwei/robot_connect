@@ -1,0 +1,14 @@
+{
+  "header": {
+      "seq": 206,
+      "stamp": {
+          "secs": 1698000050,
+          "nsecs": 234567
+      },
+      "frame_id": "camera_link"
+  },
+  "cmd_id": "START_WORKING_001",
+  "cmd_type": "START_WORKING",
+  "params": {},
+  "extra": {}
+}

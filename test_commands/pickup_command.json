@@ -1,0 +1,25 @@
+{
+    "header": {
+        "seq": 203,
+        "stamp": {
+            "secs": 1698000020,
+            "nsecs": 345678
+        },
+        "frame_id": "base_link"
+    },
+    "cmd_id": "PICK_UP_001",
+    "cmd_type": "PICK_UP",
+    "params": {
+        "target_params": [
+            {
+                "bottle_id": "glass_bottle_1000_001"
+            },
+            {
+                "bottle_id": "glass_bottle_1000_002"
+            }
+        ],
+        "timeout": 10.0
+    },
+    "extra": {}
+}
+

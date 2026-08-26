@@ -1,0 +1,11 @@
+# Python 依赖包
+Bottleneck==1.4.2
+numexpr==2.10.1
+numpy==2.0.2
+pandas==2.3.3
+pymodbus==3.8.6
+python-dateutil==2.9.0.post0
+pytz==2025.2
+six==1.17.0
+tzdata==2025.2
+websockets==15.0.1

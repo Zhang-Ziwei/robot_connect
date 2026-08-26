@@ -1,0 +1,77 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# ── 环境变量 / 密钥（绝不上库）────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.secret
+*credentials*
+*password*
+
+# ── TLS / SSL 证书与私钥（原则见下方注释）──────────────────────────────────────
+# 原则：
+#   1. 私钥（key.pem / *.key）永远不要提交
+#   2. 自签/内网证书（cert.pem / *.crt / *.pem）也不要提交，避免泄露部署细节
+#   3. 仓库里只保留说明或示例：如 config/ssl/README.md、*.pem.example
+#   4. 真机证书放到本机 / 挂载卷 /config/ssl/，由部署时注入
+config/ssl/*.pem
+config/ssl/*.key
+config/ssl/*.crt
+config/ssl/*.p12
+config/ssl/*.pfx
+**/ssl/*.pem
+**/ssl/*.key
+**/ssl/*.crt
+*.pem
+*.key
+!*.pem.example
+!*.key.example
+
+# ── 运行时状态 / 日志（机器本地生成）──────────────────────────────────────────
+logs/
+*.log
+error_log_*.txt
+*_slots.json
+*_state.json
+station_state.json
+storage_state.json
+
+# ── 大体积产物 / 镜像包 ───────────────────────────────────────────────────────
+*.tar
+*.tar.gz
+*.zip
+!requirement.txt
+mock_rosbridge/*.tar
+run_file/*.tar
+run_file.zip
+
+# ── IDE / 系统杂项 ────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── 本地覆盖配置（若需上库请用 robot_config.example.json）────────────────────
+# 含现场 IP/账号时可取消下一行注释，改为只提交 example
+# **/robot_config.json
+# !**/robot_config.example.json

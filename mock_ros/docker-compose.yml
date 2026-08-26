@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  mock-ros:
+    build:
+      context: .
+      dockerfile: Dockerfile_arm
+    image: mock-ros-chem:latest
+    container_name: mock-ros-chem
+    ports:
+      # rosbridge WebSocket，main.py 使用此端口（与真实机器人一致）
+      - "9090:9090"
+    restart: unless-stopped
+    # 向 start.sh 透传额外参数，例如：
+    #   docker compose run --rm mock-ros --task-name SCAN_TABLE --quiet
+    # 若无额外参数直接 docker compose up 即可
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ROS_MASTER_URI=http://localhost:11311

@@ -1,0 +1,27 @@
+{
+  "header": {
+    "seq": 1,
+    "stamp": {
+      "secs": 1696000000,
+      "nsecs": 123456
+    },
+    "frame_id": "map"
+  },
+  "cmd_id": "PICK_COMPONENT_TO_SP_001",
+  "cmd_type": "PICK_COMPONENT_TO_SP",
+  "params": {
+    "robot_id": "robot_a",
+    "box_initial_area": "component_car",
+    "component_type": "black_joystick",
+    "target": [{
+        "box_target_area": [0, 2, 2],
+        "component_number": 1
+      },
+      {
+        "box_target_area": [0, 1, 2],
+        "component_number": 1
+      }
+    ]
+  },
+  "extra": {}
+}

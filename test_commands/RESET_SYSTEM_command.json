@@ -1,0 +1,15 @@
+{
+  "header": {
+      "seq": 207,
+      "stamp": {
+          "secs": 1698000051,
+          "nsecs": 234567
+      },
+      "frame_id": "camera_link"
+  },
+  "cmd_id": "RESET_SYSTEM_001",
+  "cmd_type": "RESET_SYSTEM",
+  "params": {},
+  "extra": {}
+}
+

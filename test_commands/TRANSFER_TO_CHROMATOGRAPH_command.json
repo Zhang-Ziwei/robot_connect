@@ -1,0 +1,17 @@
+{
+    "header": {
+        "seq": 401,
+        "stamp": {
+            "secs": 1737043200,
+            "nsecs": 0
+        },
+        "frame_id": "chromatograph_transfer"
+    },
+    "cmd_id": "TRANSFER_TO_CHROMATOGRAPH_001",
+    "cmd_type": "TRANSFER_TO_CHROMATOGRAPH",
+    "params": {
+        "robot_id": "robot_a"
+    },
+    "extra": {}
+}
+

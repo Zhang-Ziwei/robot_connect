@@ -1,0 +1,15 @@
+{
+    "header": {
+        "seq": 301,
+        "stamp": {
+            "secs": 1737043200,
+            "nsecs": 0
+        },
+        "frame_id": "station_counter"
+    },
+    "cmd_id": "GET_STATION_COUNTER_001",
+    "cmd_type": "GET_STATION_COUNTER",
+    "params": {
+    },
+    "extra": {}
+}

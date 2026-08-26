@@ -1,0 +1,11 @@
+{
+    "cmd_id": "get_finger_pressures_001",
+    "cmd_type": "GET_FINGER_PRESSURES",
+    "params": {
+        "robot_id": "robot_b",
+        "hand": null
+    },
+    "extra": {
+        "description": "查询机器人手指压力传感器（hand可选: left/right/null查询双手）"
+    }
+}

@@ -1,0 +1,106 @@
+{
+    "active_project": "ATC",
+    "robots": {
+        "robot_a": {
+            "host": "192.168.0.3",
+            "port": "9090",
+            "robot_type": "robot_a",
+            "enabled": true,
+            "navigation_map": "atc_map2026"
+        },
+        "robot_b": {
+            "host": "0.0.0.0",
+            "port": "9091",
+            "robot_type": "robot_b",
+            "enabled": true,
+            "navigation_map": "atc_map"
+        }
+    },
+    "http_server": {
+        "port": 8090
+    },
+    "websocket_server": {
+        "enabled": true,
+        "port": 8091,
+        "ssl_enabled": false,
+        "ssl_cert_file": "/config/ssl/cert.pem",
+        "ssl_key_file": "/config/ssl/key.pem",
+        "heartbeat_interval": 30,
+        "max_clients": 100,
+        "default_client_id": "robot_connect_client"
+    },
+    "websocket_client": {
+        "enabled": false,
+        "server_host": "172.16.10.230",
+        "server_port": 8091,
+        "server_path": "/",
+        "ssl_enabled": false,
+        "client_id": "8848",
+        "auth_type": "basic",
+        "auth_token": null,
+        "auth_username": "installer",
+        "auth_password": "Inst@ller1",
+        "reconnect_interval": 5,
+        "reconnect_max_attempts": null,
+        "heartbeat_interval": 30
+    },
+    "robot_connection": {
+        "reconnect_max_attempts": null,
+        "reconnect_interval": 5,
+        "ping_interval": 20,
+        "ping_timeout": 30
+    },
+    "navigation_map": {
+        "auto_set_on_connect": true,
+        "wait_idle_timeout": 60,
+        "service_timeout": 30,
+        "skip_if_same": true
+    },
+    "navigation_localization": {
+        "_comment": "导航定位（reloc）配置。auto_set_after_map=true 时，地图设置成功后自动发布重定位请求并等待成功。map_path 留空时使用当前导航地图名。",
+        "auto_set_after_map": false,
+        "method": "auto",
+        "map_path": "",
+        "x_pos": 0.0, "y_pos": 0.0, "z_pos": 0.0,
+        "x_ori": 0.0, "y_ori": 0.0, "z_ori": 0.0, "w_ori": 0.0,
+        "check_timeout": 30,
+        "retry_interval": 10,
+        "max_retries": 5
+    },
+    "http_client": {
+        "_comment": "外部 HTTP 客户端目标服务器地址（主动调用外部服务时填写，如 AJL 对接色谱仪）。host 为空时禁用。",
+        "host": "",
+        "port": 0
+    },
+    "navigation_poses": {
+        "_comment": "ATC 项目导航点位坐标。格式：[[x,y,z,qx,qy,qz,qw], ...]。key 名改动会触发警告并回退到硬编码默认值。",
+        "ATC": {
+            "home":    [[0.95, -0.25, 0.0, 0.0, 0.0, 0.05, 1.00]],
+            "P1":      [[-0.96, -0.92, 0.0, 0.0, 0.0, 1.00, -0.05]],
+            "P1_mid":  [[0.07, 0.89, 0.0, 0.0, 0.0, -0.68, 0.73], [-0.96, -0.92, 0.0, 0.0, 0.0, 1.00, -0.05]],
+            "P2":      [[-1.02, -0.18, 0.0, 0.0, 0.0, 1.00, -0.05]],
+            "P2_mid":  [[0.07, 0.89, 0.0, 0.0, 0.0, -0.68, 0.73], [-1.02, -0.18, 0.0, 0.0, 0.0, 1.00, -0.05]],
+            "P3_1":    [[0.88, 0.30, 0.0, 0.0, 0.0, 0.05, 1.00]],
+            "P3_1_mid":[[0.07, 0.89, 0.0, 0.0, 0.0, -0.68, 0.73], [0.88, 0.30, 0.0, 0.0, 0.0, 0.05, 1.00]],
+            "P3_2":    [[0.97, -0.64, 0.0, 0.0, 0.0, 0.05, 1.00]],
+            "P3_2_mid":[[0.07, 0.89, 0.0, 0.0, 0.0, -0.68, 0.73], [0.97, -0.64, 0.0, 0.0, 0.0, 0.05, 1.00]],
+            "P4":      [[0.59, 2.01, 0.0, 0.0, 0.0, 0.73, 0.68]],
+            "P4_mid":  [[0.07, 0.89, 0.0, 0.0, 0.0, -0.68, 0.73]]
+        }
+    },
+    "auto_charging": {
+        "enabled": false,
+        "require_battery_on_startup": false,
+        "battery_wait_timeout": 60,
+        "check_interval": 60,
+        "low_threshold": 0.20,
+        "charging_done_threshold": 0.99,
+        "charging_accept_task_threshold": 0.30,
+        "charging_status_check_delay": 30,
+        "charging_status_max_retries": 3,
+        "charging_done_home_poses": {
+            "robot_a": "home_transfer",
+            "robot_b": "home_split"
+        }
+    }
+}

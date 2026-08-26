@@ -1,0 +1,132 @@
+{
+    "active_project": "KAIAO",
+    "robots": {
+        "robot_a": {
+            "host": "0.0.0.0",
+            "port": "9090",
+            "robot_type": "robot_a",
+            "enabled": true,
+            "navigation_map": "kion"
+        },
+        "robot_b": {
+            "host": "0.0.0.0",
+            "port": "9091",
+            "robot_type": "robot_b",
+            "enabled": false,
+            "navigation_map": "atc_map"
+        }
+    },
+    "http_server": {
+        "port": 8090
+    },
+    "websocket_server": {
+        "enabled": true,
+        "port": 8091,
+        "ssl_enabled": false,
+        "ssl_cert_file": "/config/ssl/cert.pem",
+        "ssl_key_file": "/config/ssl/key.pem",
+        "heartbeat_interval": 30,
+        "max_clients": 100,
+        "default_client_id": "robot_connect_client"
+    },
+    "websocket_client": {
+        "enabled": false,
+        "server_host": "172.16.10.230",
+        "server_port": 8091,
+        "server_path": "/",
+        "ssl_enabled": false,
+        "client_id": "8848",
+        "auth_type": "basic",
+        "auth_token": null,
+        "auth_username": "installer",
+        "auth_password": "Inst@ller1",
+        "reconnect_interval": 5,
+        "reconnect_max_attempts": null,
+        "heartbeat_interval": 30
+    },
+    "robot_connection": {
+        "reconnect_max_attempts": null,
+        "reconnect_interval": 5,
+        "ping_interval": 20,
+        "ping_timeout": 30
+    },
+    "navigation_map": {
+        "auto_set_on_connect": true,
+        "wait_idle_timeout": 60,
+        "service_timeout": 30,
+        "skip_if_same": true
+    },
+    "navigation_localization": {
+        "_comment": "导航定位（reloc）配置。auto_set_after_map=true 时，地图设置成功后自动发布重定位请求并等待成功。map_path 留空时使用当前导航地图名。",
+        "auto_set_after_map": true,
+        "method": "auto",
+        "map_path": "",
+        "x_pos": 0.0, "y_pos": 0.0, "z_pos": 0.0,
+        "x_ori": 0.0, "y_ori": 0.0, "z_ori": 0.0, "w_ori": 0.0,
+        "check_timeout": 30,
+        "retry_interval": 5,
+        "max_retries": 5
+    },
+    "http_client": {
+        "_comment": "外部 HTTP 客户端目标服务器地址（主动调用外部服务时填写，如 AJL 对接色谱仪）。host 为空时禁用。",
+        "host": "",
+        "port": 0
+    },
+    "callback": {
+        "_comment": "异步任务完成后主动回调。对方须返回 {received:true}；未确认则按 retry_interval 重发，最多 retry 次。",
+        "enabled": true,
+        "url": "http://192.168.161.202:50005/wcs/humanoidRobot/updateTaskState",
+        "timeout": 10,
+        "retry": 3,
+        "retry_interval": 10
+    },
+    "kaiao_waypoint": {
+        "_comment": "狭长走廊中间过渡点。end_yaw_half_width_deg：端点(±y)相对货架(±x)判定半宽，默认45°（旧10°易误判）。end_to_side/side_to_end：平移+旋转；side_to_side_same_retreat_dx：同侧货架先后退再对齐目标y；side_to_side_mid_1/2：异侧货架撤退点。",
+        "angle_threshold_deg": 45.0,
+        "end_yaw_half_width_deg": 45.0,
+        "angle_offset_deg":    90.0,
+        "end_to_side_dx": 0.1,
+        "end_to_side_dy": 0.0,
+        "side_to_end_dx": 0.4,
+        "side_to_end_dy": 0.0,
+        "side_to_side_same_retreat_dx": 0.3,
+        "side_to_side_mid_1": [[-0.58, -0.80, 0.0, 0.0, 0.0, 0.71, 0.71]],
+        "side_to_side_mid_2": [[-0.58, 2.10, 0.0, 0.0, 0.0, -0.71, 0.71]]
+    },
+    "navigation_poses": {
+        "_comment": "KAIAO 项目导航点位坐标",
+        "KAIAO": {
+            "home":    [[-0.48, 1.20, 0.0, 0.0, 0.0, 0.71, 0.71]],
+            "agv_car0_0": [[-0.56, -0.80, 0.0, 0.0, 0.0, -0.71, 0.71]],
+            "shelf0_0":   [[-0.82, 1.32, 0.0, 0.0, 0.0, 1.0, 0.0]],
+            "shelf0_1":   [[-0.82, 0.89, 0.0, 0.0, 0.0, 1.0, 0.0]],
+            "shelf0_2":   [[-0.82, 0.44, 0.0, 0.0, 0.0, 1.0, 0.0]],
+            "shelf0_3":   [[-0.82, -0.05, 0.0, 0.0, 0.0, 1.0, 0.0]],
+            "shelf1_0":   [[-0.35, 1.25, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "shelf1_1":   [[-0.35, 0.82, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "shelf1_2":   [[-0.35, 0.48, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "shelf1_3":   [[-0.35, 0.02, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "component_car": [[-0.45, 2.17, 0.0, 0.0, 0.0, 0.71, 0.71]],
+            "point1":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "point2":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "point3":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "point4":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "point5":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]]
+        }
+    },
+    "auto_charging": {
+        "enabled": false,
+        "require_battery_on_startup": false,
+        "battery_wait_timeout": 60,
+        "check_interval": 60,
+        "low_threshold": 0.20,
+        "charging_done_threshold": 0.99,
+        "charging_accept_task_threshold": 0.30,
+        "charging_status_check_delay": 30,
+        "charging_status_max_retries": 3,
+        "charging_done_home_poses": {
+            "robot_a": "home",
+            "robot_b": "home"
+        }
+    }
+}

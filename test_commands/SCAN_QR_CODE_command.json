@@ -1,0 +1,18 @@
+{
+    "header": {
+        "seq": 206,
+        "stamp": {
+            "secs": 1698000050,
+            "nsecs": 234567
+        },
+        "frame_id": "camera_link"
+    },
+    "cmd_id": "SCAN_QRCODE_001",
+    "cmd_type": "SCAN_QRCODE",
+    "params": {
+        "run_times": "continue",
+        "robot_id": "robot_a",
+        "timeout": 60.0
+    },
+    "extra": {}
+}

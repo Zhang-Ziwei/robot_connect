@@ -1,0 +1,9 @@
+"type": "service"
+"name": "/robot_task"
+
+"service": "/robot_task"
+"task": "pick_box_to_sp",
+"area": "point_1"
+
+"task": "pick_up_component_A",
+"area": "point_1"

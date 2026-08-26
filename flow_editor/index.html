@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>机器人流程图形化编辑器</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="toolbar">
+  <span class="brand">🤖 流程编辑器</span>
+
+  <label>项目
+    <select id="sel-project"></select>
+  </label>
+
+  <label>流程
+    <select id="sel-flow"></select>
+  </label>
+
+  <button id="btn-new-flow" title="新建一个空流程">＋ 新建</button>
+  <button id="btn-save" title="保存当前流程到服务器">💾 保存</button>
+  <button id="btn-validate" title="只检查流程图结构，不实际执行">✔ 校验</button>
+  <button id="btn-dryrun" class="danger" title="用 mock 机器人跑一遍，不会影响生产机器人">▶ 演练</button>
+
+  <span id="status-text" class="status"></span>
+</header>
+
+<div id="main">
+
+  <aside id="palette">
+    <h3>节点面板</h3>
+    <p class="hint">拖到画布上即可添加</p>
+    <div id="palette-list"></div>
+  </aside>
+
+  <div id="canvas-wrapper">
+    <svg id="edge-layer"></svg>
+    <div id="node-layer"></div>
+  </div>
+
+  <aside id="inspector">
+    <h3>节点属性</h3>
+    <div id="inspector-body">
+      <p class="hint">点击画布上的节点以编辑参数</p>
+    </div>
+  </aside>
+
+</div>
+
+<footer id="log-panel">
+  <div id="log-header">
+    <span>执行日志 / 演练轨迹</span>
+    <button id="btn-clear-log">清空</button>
+  </div>
+  <div id="log-body"></div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

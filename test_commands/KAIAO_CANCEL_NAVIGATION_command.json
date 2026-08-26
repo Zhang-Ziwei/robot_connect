@@ -1,0 +1,16 @@
+{
+  "header": {
+    "seq": 1,
+    "stamp": {"secs": 1696000000, "nsecs": 0},
+    "frame_id": "map"
+  },
+  "cmd_id": "CANCEL_NAVIGATION_001",
+  "cmd_type": "CANCEL_NAVIGATION",
+  "params": {
+    "robot_id": "robot_a",
+    "goal_id": ""
+  },
+  "extra": {
+    "description": "软急停：取消当前导航。goal_id 为空字符串表示取消全部在途 goal；填写具体 goal_id 则仅取消该次导航。"
+  }
+}

@@ -1,0 +1,10 @@
+{
+    "cmd_id": "get_battery_001",
+    "cmd_type": "GET_BATTERY_STATE",
+    "params": {
+        "robot_id": "robot_a"
+    },
+    "extra": {
+        "description": "查询机器人电池电量（percentage、voltage、power_supply_status）"
+    }
+}

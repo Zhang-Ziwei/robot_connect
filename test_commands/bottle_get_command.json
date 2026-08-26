@@ -1,0 +1,17 @@
+{
+    "header": {
+        "seq": 206,
+        "stamp": {
+            "secs": 1698000050,
+            "nsecs": 234567
+        },
+        "frame_id": "camera_link"
+    },
+    "cmd_id": "BOTTLE_GET_001",
+    "cmd_type": "BOTTLE_GET",
+    "params": {
+    },
+    "detail_params": true,
+    "extra": {}
+}
+

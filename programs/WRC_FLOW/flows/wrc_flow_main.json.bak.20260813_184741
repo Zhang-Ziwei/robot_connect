@@ -1,0 +1,306 @@
+{
+  "flow_id": "wrc_flow_main",
+  "description": "WRC_FLOW 演示流程：完整对照 programs/WRC/WRC.py 的 _execute_trans_component_async（robot_a 分拣搬运）与 _execute_assemble_async（robot_b 装配）两条并行循环改写而成。用简化的字符串上下文变量（p1_state / P3_1_state / P3_2_state / p4_state）代替真实的 SlotTracker 持久化状态，控制流结构（动态选槽位、P4 三态分支、按 P1 余量回点）与原流程保持一致。循环用环形连线表达，PROCESS_ENDED 通过 stop_event 中断两条分支。",
+  "start": "p_start",
+  "context_vars": {
+    "robot_id_a": "robot_a",
+    "robot_id_b": "robot_b",
+    "robot_id_c": "robot_c",
+    "p1_state": "EMPTY",
+    "P3_1_state": "EMPTY",
+    "P3_2_state": "EMPTY",
+    "p4_state": "NO_BOX"
+  },
+  "nodes": [
+    { "id": "p_start", "type": "parallel", "label": "并行启动：robot_a分拣搬运 + robot_b装配",
+      "params": { "branches": ["a1_wait_reset", "b1_wait_p4_full"], "join": "all" } },
+
+    { "id": "a1_wait_reset", "type": "wait_for_command", "label": "等待人工复位完成信号",
+      "params": { "event_name": "manual_reset", "timeout": null } },
+    { "id": "a1b_set_p1_full", "type": "set_variable", "label": "人工复位完成：P1→FULL（一箱两套零件）",
+      "params": { "var": "p1_state", "value": "FULL" } },
+
+    { "id": "a2_nav_p1", "type": "navigate", "label": "导航到P1点位",
+      "params": { "pose": "P1", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a2f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a3_pick_a", "type": "send_operation", "label": "Service抓取零件A(P1)",
+      "params": { "call_type": "service", "task": "pick_up_component_A", "area": "P1", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a3f_delay", "type": "delay", "label": "抓取失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a3_note", "type": "update_step", "label": "记录：抓取零件A(P1)",
+      "params": { "step": "抓取零件A在P1点位", "robot_id": "{{robot_id_a}}" } },
+
+    { "id": "a4_find_slot", "type": "find_slot", "label": "在P3查找空箱子槽位",
+      "params": { "slots": ["P3_1", "P3_2"], "want_state": "EMPTY", "output_var": "p3_n" } },
+    { "id": "a4_error_no_empty", "type": "update_step", "label": "异常：P3没有空箱子槽位，流程终止",
+      "params": { "step": "P3区域没有空箱子槽位", "message": "参照WRC.py: set_error后return", "robot_id": "{{robot_id_a}}" } },
+
+    { "id": "a5_nav_p3n", "type": "navigate", "label": "导航到{{p3_n}}放置零件A",
+      "params": { "pose": "{{p3_n}}", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a5f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a6_put_a", "type": "send_operation", "label": "Service放下零件A到{{p3_n}}",
+      "params": { "call_type": "service", "task": "put_down_component_A", "area": "{{p3_n}}", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a6f_delay", "type": "delay", "label": "放置失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a7_set_p3_half", "type": "set_variable", "label": "{{p3_n}}→HALF（已放零件A）",
+      "params": { "var": "{{p3_n}}_state", "value": "HALF" } },
+
+    { "id": "a8_check_p1_full", "type": "condition", "label": "P1当前是否FULL？",
+      "params": { "var": "p1_state", "op": "==", "value": "FULL" } },
+    { "id": "a8t_set_p1_half", "type": "set_variable", "label": "P1: FULL→HALF（首套抓完）",
+      "params": { "var": "p1_state", "value": "HALF" } },
+    { "id": "a8f_set_p1_empty", "type": "set_variable", "label": "P1: HALF→EMPTY（两套已抓完）",
+      "params": { "var": "p1_state", "value": "EMPTY" } },
+
+    { "id": "a9_nav_p2", "type": "navigate", "label": "导航到P2点位抓取零件B",
+      "params": { "pose": "P2", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a9f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a10_pick_b", "type": "send_operation", "label": "Service抓取零件B(P2)",
+      "params": { "call_type": "service", "task": "pick_up_component_B", "area": "P2", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a10f_delay", "type": "delay", "label": "抓取失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a11_nav_p3n_again", "type": "navigate", "label": "再次导航到{{p3_n}}放置零件B",
+      "params": { "pose": "{{p3_n}}", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a11f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a12_put_b", "type": "send_operation", "label": "Service放下零件B到{{p3_n}}",
+      "params": { "call_type": "service", "task": "put_down_component_B", "area": "{{p3_n}}", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a12f_delay", "type": "delay", "label": "放置失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a13_set_p3_full", "type": "set_variable", "label": "{{p3_n}}→FULL（零件A+B已放齐）",
+      "params": { "var": "{{p3_n}}_state", "value": "FULL" } },
+
+    { "id": "a14_check_p4_full", "type": "condition", "label": "P4是否已满？",
+      "params": { "var": "p4_state", "op": "==", "value": "FULL" } },
+    { "id": "a14_wait_delay", "type": "delay", "label": "在{{p3_n}}前等待P4装配腾空", "params": { "seconds": 2 } },
+
+    { "id": "a15_check_p4_nobox", "type": "condition", "label": "P4是否无箱？",
+      "params": { "var": "p4_state", "op": "==", "value": "NO_BOX" } },
+
+    { "id": "a16_nav_p3n_direct", "type": "navigate", "label": "[无箱直搬]导航到{{p3_n}}满箱点位",
+      "params": { "pose": "{{p3_n}}", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a16f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a17_pick_full_box", "type": "send_operation", "label": "[无箱直搬]搬起{{p3_n}}满箱子",
+      "params": { "call_type": "service", "service": "robot_task_geely", "task": "pick_up_box", "area": "{{p3_n}}", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a17f_delay", "type": "delay", "label": "搬箱失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a18_nav_p4", "type": "navigate", "label": "[无箱直搬]导航到P4点位",
+      "params": { "pose": "P4", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a18f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a19_put_full_box", "type": "send_operation", "label": "[无箱直搬]放下满箱子到P4",
+      "params": { "call_type": "service", "service": "robot_task_geely", "task": "put_down_box", "area": "P4", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a19f_delay", "type": "delay", "label": "放箱失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a19a_set_p3n_nobox", "type": "set_variable", "label": "{{p3_n}}→NO_BOX（满箱已搬走）",
+      "params": { "var": "{{p3_n}}_state", "value": "NO_BOX" } },
+    { "id": "a19b_set_p4_full", "type": "set_variable", "label": "P4→FULL（首轮搬箱完成）",
+      "params": { "var": "p4_state", "value": "FULL" } },
+
+    { "id": "a20_nav_p4_takeempty", "type": "navigate", "label": "[换箱]导航到P4点位取空箱",
+      "params": { "pose": "P4", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a20f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a21_pick_empty_box", "type": "send_operation", "label": "[换箱]搬起P4空箱子",
+      "params": { "call_type": "service", "service": "robot_task_geely", "task": "pick_up_box", "area": "P4", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a21f_delay", "type": "delay", "label": "搬箱失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a22_find_nobox_slot", "type": "find_slot", "label": "在P3查找无箱槽位（接收空箱）",
+      "params": { "slots": ["P3_1", "P3_2"], "want_state": "NO_BOX", "output_var": "p3_k" } },
+    { "id": "a22_error_no_nobox", "type": "update_step", "label": "异常：P3没有无箱槽位，流程终止",
+      "params": { "step": "P3区域没有无箱子槽位，无法接收P4空箱", "robot_id": "{{robot_id_a}}" } },
+
+    { "id": "a23_nav_p3k", "type": "navigate", "label": "[换箱]导航到{{p3_k}}空点位",
+      "params": { "pose": "{{p3_k}}", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a23f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a24_put_empty_box", "type": "send_operation", "label": "[换箱]放下空箱子到{{p3_k}}",
+      "params": { "call_type": "service", "service": "robot_task_geely", "task": "put_down_box", "area": "{{p3_k}}", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a24f_delay", "type": "delay", "label": "放箱失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a24a_set_p4_nobox", "type": "set_variable", "label": "P4→NO_BOX（空箱已放到{{p3_k}}）",
+      "params": { "var": "p4_state", "value": "NO_BOX" } },
+    { "id": "a24b_set_p3k_empty", "type": "set_variable", "label": "{{p3_k}}→EMPTY（可放新零件）",
+      "params": { "var": "{{p3_k}}_state", "value": "EMPTY" } },
+
+    { "id": "a25_nav_p3n_full", "type": "navigate", "label": "[换箱]导航到{{p3_n}}满箱子点位",
+      "params": { "pose": "{{p3_n}}", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a25f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a26_pick_full_box2", "type": "send_operation", "label": "[换箱]搬起{{p3_n}}满箱子",
+      "params": { "call_type": "service", "service": "robot_task_geely", "task": "pick_up_box", "area": "{{p3_n}}", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a26f_delay", "type": "delay", "label": "搬箱失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a27_nav_p4_again", "type": "navigate", "label": "[换箱]再次导航到P4点位",
+      "params": { "pose": "P4", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a27f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a28_put_full_box2", "type": "send_operation", "label": "[换箱]放下满箱子到P4",
+      "params": { "call_type": "service", "service": "robot_task_geely", "task": "put_down_box", "area": "P4", "robot_id": "{{robot_id_a}}" } },
+    { "id": "a28f_delay", "type": "delay", "label": "放箱失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a28a_set_p3n_nobox2", "type": "set_variable", "label": "{{p3_n}}→NO_BOX（满箱已搬走）",
+      "params": { "var": "{{p3_n}}_state", "value": "NO_BOX" } },
+    { "id": "a28b_set_p4_full2", "type": "set_variable", "label": "P4→FULL（换箱搬箱完成）",
+      "params": { "var": "p4_state", "value": "FULL" } },
+
+    { "id": "a30_check_p1_empty", "type": "condition", "label": "P1是否已EMPTY（两套零件都抓完）？",
+      "params": { "var": "p1_state", "op": "==", "value": "EMPTY" } },
+    { "id": "a31_nav_home", "type": "navigate", "label": "P1/P2零件已空：导航回home等待补料",
+      "params": { "pose": "home", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a31f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+    { "id": "a32_nav_p1_return", "type": "navigate", "label": "P1仍有零件：导航回P1继续分拣",
+      "params": { "pose": "P1", "robot_id": "{{robot_id_a}}", "skip_if_at_pose": true } },
+    { "id": "a32f_delay", "type": "delay", "label": "导航失败重试前等待", "params": { "seconds": 3 } },
+
+    { "id": "a33_note_cycle_done", "type": "update_step", "label": "记录：完成一个分拣搬运周期",
+      "params": { "step": "完成一个分拣搬运周期，等待下一周期", "robot_id": "{{robot_id_a}}" } },
+
+    { "id": "b1_wait_p4_full", "type": "condition", "label": "P4是否有满箱子？",
+      "params": { "var": "p4_state", "op": "==", "value": "FULL" } },
+    { "id": "b1_wait_delay", "type": "delay", "label": "等待P4满箱子（轮询）", "params": { "seconds": 1 } },
+
+    { "id": "b2_do_assembly", "type": "send_operation", "label": "Service装配(assembly)",
+      "params": { "call_type": "service", "task": "assembly", "robot_id": "{{robot_id_b}}" } },
+    { "id": "b2f_delay", "type": "delay", "label": "装配失败重试前等待", "params": { "seconds": 5 } },
+    { "id": "b3_set_p4_empty", "type": "set_variable", "label": "P4→EMPTY（料箱拿完）",
+      "params": { "var": "p4_state", "value": "EMPTY" } },
+
+    { "id": "b4_continue_assembly", "type": "send_operation", "label": "Service继续装配(continue_assembly)",
+      "params": { "call_type": "service", "task": "continue_assembly", "robot_id": "{{robot_id_b}}" } },
+    { "id": "b4f_delay", "type": "delay", "label": "继续装配失败重试前等待", "params": { "seconds": 5 } },
+
+    { "id": "b5_note_cycle_done", "type": "update_step", "label": "记录：完成一轮装配",
+      "params": { "step": "完成一轮装配，等待下一周期", "robot_id": "{{robot_id_b}}" } }
+  ],
+  "edges": [
+    { "source": "a1_wait_reset", "target": "a1b_set_p1_full", "when": "success" },
+    { "source": "a1b_set_p1_full", "target": "a2_nav_p1", "when": "default" },
+
+    { "source": "a2_nav_p1", "target": "a3_pick_a", "when": "success" },
+    { "source": "a2_nav_p1", "target": "a2f_delay", "when": "failure" },
+    { "source": "a2f_delay", "target": "a2_nav_p1", "when": "default" },
+
+    { "source": "a3_pick_a", "target": "a3_note", "when": "success" },
+    { "source": "a3_pick_a", "target": "a3f_delay", "when": "failure" },
+    { "source": "a3f_delay", "target": "a3_pick_a", "when": "default" },
+    { "source": "a3_note", "target": "a4_find_slot", "when": "default" },
+
+    { "source": "a4_find_slot", "target": "a5_nav_p3n", "when": "success" },
+    { "source": "a4_find_slot", "target": "a4_error_no_empty", "when": "failure" },
+
+    { "source": "a5_nav_p3n", "target": "a6_put_a", "when": "success" },
+    { "source": "a5_nav_p3n", "target": "a5f_delay", "when": "failure" },
+    { "source": "a5f_delay", "target": "a5_nav_p3n", "when": "default" },
+
+    { "source": "a6_put_a", "target": "a7_set_p3_half", "when": "success" },
+    { "source": "a6_put_a", "target": "a6f_delay", "when": "failure" },
+    { "source": "a6f_delay", "target": "a6_put_a", "when": "default" },
+
+    { "source": "a7_set_p3_half", "target": "a8_check_p1_full", "when": "default" },
+    { "source": "a8_check_p1_full", "target": "a8t_set_p1_half", "when": "true" },
+    { "source": "a8_check_p1_full", "target": "a8f_set_p1_empty", "when": "false" },
+    { "source": "a8t_set_p1_half", "target": "a9_nav_p2", "when": "default" },
+    { "source": "a8f_set_p1_empty", "target": "a9_nav_p2", "when": "default" },
+
+    { "source": "a9_nav_p2", "target": "a10_pick_b", "when": "success" },
+    { "source": "a9_nav_p2", "target": "a9f_delay", "when": "failure" },
+    { "source": "a9f_delay", "target": "a9_nav_p2", "when": "default" },
+
+    { "source": "a10_pick_b", "target": "a11_nav_p3n_again", "when": "success" },
+    { "source": "a10_pick_b", "target": "a10f_delay", "when": "failure" },
+    { "source": "a10f_delay", "target": "a10_pick_b", "when": "default" },
+
+    { "source": "a11_nav_p3n_again", "target": "a12_put_b", "when": "success" },
+    { "source": "a11_nav_p3n_again", "target": "a11f_delay", "when": "failure" },
+    { "source": "a11f_delay", "target": "a11_nav_p3n_again", "when": "default" },
+
+    { "source": "a12_put_b", "target": "a13_set_p3_full", "when": "success" },
+    { "source": "a12_put_b", "target": "a12f_delay", "when": "failure" },
+    { "source": "a12f_delay", "target": "a12_put_b", "when": "default" },
+
+    { "source": "a13_set_p3_full", "target": "a14_check_p4_full", "when": "default" },
+    { "source": "a14_check_p4_full", "target": "a14_wait_delay", "when": "true" },
+    { "source": "a14_wait_delay", "target": "a14_check_p4_full", "when": "default" },
+    { "source": "a14_check_p4_full", "target": "a15_check_p4_nobox", "when": "false" },
+
+    { "source": "a15_check_p4_nobox", "target": "a16_nav_p3n_direct", "when": "true" },
+    { "source": "a15_check_p4_nobox", "target": "a20_nav_p4_takeempty", "when": "false" },
+
+    { "source": "a16_nav_p3n_direct", "target": "a17_pick_full_box", "when": "success" },
+    { "source": "a16_nav_p3n_direct", "target": "a16f_delay", "when": "failure" },
+    { "source": "a16f_delay", "target": "a16_nav_p3n_direct", "when": "default" },
+
+    { "source": "a17_pick_full_box", "target": "a18_nav_p4", "when": "success" },
+    { "source": "a17_pick_full_box", "target": "a17f_delay", "when": "failure" },
+    { "source": "a17f_delay", "target": "a17_pick_full_box", "when": "default" },
+
+    { "source": "a18_nav_p4", "target": "a19_put_full_box", "when": "success" },
+    { "source": "a18_nav_p4", "target": "a18f_delay", "when": "failure" },
+    { "source": "a18f_delay", "target": "a18_nav_p4", "when": "default" },
+
+    { "source": "a19_put_full_box", "target": "a19a_set_p3n_nobox", "when": "success" },
+    { "source": "a19_put_full_box", "target": "a19f_delay", "when": "failure" },
+    { "source": "a19f_delay", "target": "a19_put_full_box", "when": "default" },
+    { "source": "a19a_set_p3n_nobox", "target": "a19b_set_p4_full", "when": "default" },
+    { "source": "a19b_set_p4_full", "target": "a30_check_p1_empty", "when": "default" },
+
+    { "source": "a20_nav_p4_takeempty", "target": "a21_pick_empty_box", "when": "success" },
+    { "source": "a20_nav_p4_takeempty", "target": "a20f_delay", "when": "failure" },
+    { "source": "a20f_delay", "target": "a20_nav_p4_takeempty", "when": "default" },
+
+    { "source": "a21_pick_empty_box", "target": "a22_find_nobox_slot", "when": "success" },
+    { "source": "a21_pick_empty_box", "target": "a21f_delay", "when": "failure" },
+    { "source": "a21f_delay", "target": "a21_pick_empty_box", "when": "default" },
+
+    { "source": "a22_find_nobox_slot", "target": "a23_nav_p3k", "when": "success" },
+    { "source": "a22_find_nobox_slot", "target": "a22_error_no_nobox", "when": "failure" },
+
+    { "source": "a23_nav_p3k", "target": "a24_put_empty_box", "when": "success" },
+    { "source": "a23_nav_p3k", "target": "a23f_delay", "when": "failure" },
+    { "source": "a23f_delay", "target": "a23_nav_p3k", "when": "default" },
+
+    { "source": "a24_put_empty_box", "target": "a24a_set_p4_nobox", "when": "success" },
+    { "source": "a24_put_empty_box", "target": "a24f_delay", "when": "failure" },
+    { "source": "a24f_delay", "target": "a24_put_empty_box", "when": "default" },
+    { "source": "a24a_set_p4_nobox", "target": "a24b_set_p3k_empty", "when": "default" },
+    { "source": "a24b_set_p3k_empty", "target": "a25_nav_p3n_full", "when": "default" },
+
+    { "source": "a25_nav_p3n_full", "target": "a26_pick_full_box2", "when": "success" },
+    { "source": "a25_nav_p3n_full", "target": "a25f_delay", "when": "failure" },
+    { "source": "a25f_delay", "target": "a25_nav_p3n_full", "when": "default" },
+
+    { "source": "a26_pick_full_box2", "target": "a27_nav_p4_again", "when": "success" },
+    { "source": "a26_pick_full_box2", "target": "a26f_delay", "when": "failure" },
+    { "source": "a26f_delay", "target": "a26_pick_full_box2", "when": "default" },
+
+    { "source": "a27_nav_p4_again", "target": "a28_put_full_box2", "when": "success" },
+    { "source": "a27_nav_p4_again", "target": "a27f_delay", "when": "failure" },
+    { "source": "a27f_delay", "target": "a27_nav_p4_again", "when": "default" },
+
+    { "source": "a28_put_full_box2", "target": "a28a_set_p3n_nobox2", "when": "success" },
+    { "source": "a28_put_full_box2", "target": "a28f_delay", "when": "failure" },
+    { "source": "a28f_delay", "target": "a28_put_full_box2", "when": "default" },
+    { "source": "a28a_set_p3n_nobox2", "target": "a28b_set_p4_full2", "when": "default" },
+    { "source": "a28b_set_p4_full2", "target": "a30_check_p1_empty", "when": "default" },
+
+    { "source": "a30_check_p1_empty", "target": "a31_nav_home", "when": "true" },
+    { "source": "a31_nav_home", "target": "a33_note_cycle_done", "when": "success" },
+    { "source": "a31_nav_home", "target": "a31f_delay", "when": "failure" },
+    { "source": "a31f_delay", "target": "a31_nav_home", "when": "default" },
+
+    { "source": "a30_check_p1_empty", "target": "a32_nav_p1_return", "when": "false" },
+    { "source": "a32_nav_p1_return", "target": "a33_note_cycle_done", "when": "success" },
+    { "source": "a32_nav_p1_return", "target": "a32f_delay", "when": "failure" },
+    { "source": "a32f_delay", "target": "a32_nav_p1_return", "when": "default" },
+
+    { "source": "a33_note_cycle_done", "target": "a1_wait_reset", "when": "default" },
+
+    { "source": "b1_wait_p4_full", "target": "b2_do_assembly", "when": "true" },
+    { "source": "b1_wait_p4_full", "target": "b1_wait_delay", "when": "false" },
+    { "source": "b1_wait_delay", "target": "b1_wait_p4_full", "when": "default" },
+
+    { "source": "b2_do_assembly", "target": "b3_set_p4_empty", "when": "success" },
+    { "source": "b2_do_assembly", "target": "b2f_delay", "when": "failure" },
+    { "source": "b2f_delay", "target": "b2_do_assembly", "when": "default" },
+    { "source": "b3_set_p4_empty", "target": "b4_continue_assembly", "when": "default" },
+
+    { "source": "b4_continue_assembly", "target": "b5_note_cycle_done", "when": "success" },
+    { "source": "b4_continue_assembly", "target": "b4f_delay", "when": "failure" },
+    { "source": "b4f_delay", "target": "b4_continue_assembly", "when": "default" },
+
+    { "source": "b5_note_cycle_done", "target": "b1_wait_p4_full", "when": "default" }
+  ]
+}

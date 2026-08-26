@@ -1,0 +1,54 @@
+# ARM架构 Robot Connect Docker镜像
+# 用于在ARM设备上运行机器人控制系统
+#
+# 外部配置文件支持:
+# 运行容器时，可以将外部配置文件挂载到 /config/robot_config.json
+# 示例: docker run -v /path/to/robot_config.json:/config/robot_config.json ...
+#
+# 配置文件优先级:
+# 1. /config/robot_config.json (Docker挂载目录，最高优先级)
+# 2. /app/robot_config.json (容器内)
+# 3. 代码默认配置
+
+FROM --platform=linux/arm64 condaforge/miniforge3:latest
+
+# 设置环境变量
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+# 设置工作目录
+WORKDIR /app
+
+# 创建配置文件目录（用于外部挂载）
+RUN mkdir -p /config
+
+# 创建conda环境
+RUN conda create -n robot_connect python=3.9 -y && \
+    conda clean -afy
+
+# 激活环境
+SHELL ["conda", "run", "-n", "robot_connect", "/bin/bash", "-c"]
+
+# 安装核心依赖
+RUN pip install --no-cache-dir \
+    websockets>=15.0 \
+    pymodbus>=3.8.0 \
+    requests>=2.32.0 \
+    numpy>=2.0.0 \
+    pandas>=2.0.0
+
+# 复制项目源代码
+COPY . .
+
+# 暴露HTTP服务器端口
+EXPOSE 8090
+
+# 声明配置文件挂载点
+VOLUME ["/config"]
+
+# 设置启动命令（使用conda环境运行）
+# 容器启动后保持运行，不自动执行程序
+# 手动运行: conda run -n robot_connect python main.py
+CMD ["/bin/bash"]
+

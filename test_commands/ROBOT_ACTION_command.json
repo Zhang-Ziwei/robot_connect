@@ -1,0 +1,17 @@
+{
+  "header": {
+      "seq": 301,
+      "stamp": {
+          "secs": 1736668800,
+          "nsecs": 0
+      },
+      "frame_id": "camera_link"
+  },
+  "cmd_id": "robot_action_005",
+  "cmd_type": "ROBOT_ACTION",
+  "params": {
+      "action_type": "B_STEP_1",
+      "robot_id": "robot_b"
+  }
+}
+

@@ -1,0 +1,17 @@
+{
+  "header": {
+      "seq": 206,
+      "stamp": {
+          "secs": 1698000050,
+          "nsecs": 234567
+      },
+      "frame_id": "camera_link"
+  },
+  "cmd_id": "GET_TASK_STATE_001",
+  "cmd_type": "GET_TASK_STATE",
+  "params": {
+        "target_cmd_id": "START_WORKING_001",
+        "robot_id": "robot_a"
+    },
+  "extra": {}
+}

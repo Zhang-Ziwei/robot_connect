@@ -1,0 +1,105 @@
+# ARM64 Mock ROS 节点镜像
+# 包含完整 ROS Noetic + rosbridge_suite，模拟机器人侧的 ROS 环境。
+#
+# ━━ 架构 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#   [本容器]
+#     roscore
+#       ↓ ROS 原生 topic / service
+#     mock_chem_project_action_server（--mode ros-node）
+#       ↓ ROS 原生 topic / service
+#     rosbridge_server（ws://0.0.0.0:9090）
+#                │
+#                │  ws://机器人IP:9090  （与真实机器人完全相同）
+#                ▼
+#     main.py / robot_connect（宿主机或远端）
+#
+# ━━ 构建 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 在 ARM64 机器（如机器人、树莓派、M 系列 Mac）上直接构建：
+#
+#   cd mock_ros/
+#   docker build -f Dockerfile_arm -t mock-ros-chem:latest .
+#
+# 在 x86_64 宿主机上交叉编译（需先安装 buildx）：
+#
+#   docker buildx build --platform linux/arm64 -f Dockerfile_arm -t mock-ros-chem:arm64 --load .
+#
+# ━━ 推送 / 导出镜像 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 导出 tar 包（适合离线拷贝到机器人）：
+#
+#   docker save mock-ros-chem:latest | gzip > mock-ros-chem-arm.tar.gz
+#
+# 目标机器上导入：
+#
+#   docker load < mock-ros-chem-arm.tar.gz
+#
+# ━━ 启动 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方式一：docker compose（推荐）
+#
+#   docker compose -f docker-compose.yml up          # 前台，可看完整日志
+#   docker compose -f docker-compose.yml up -d       # 后台
+#   docker compose -f docker-compose.yml logs -f     # 跟踪日志
+#   docker compose -f docker-compose.yml down        # 停止并删除容器
+#
+# 方式二：docker run
+#
+#   docker run -d \
+#     --name mock-ros-chem \
+#     -p 9090:9090 \
+#     mock-ros-chem:latest
+#
+# 传递额外参数给 mock 脚本（透传到 start.sh 末尾，再到 python3 ... "$@"）：
+#
+#   docker run --rm -p 9090:9090 mock-ros-chem:latest \
+#     --feedback-steps 5 --step-interval 0.5
+#
+# ━━ 调试 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 进入运行中容器的 bash：
+#
+#   docker exec -it mock-ros-chem bash
+#   source /opt/ros/noetic/setup.bash
+#   rostopic list
+#   rosservice list | grep chem_project
+#   rostopic echo /chem_project/status
+#
+# ━━ 端口说明 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 9090: rosbridge WebSocket，main.py 连接此端口（与真实机器人完全相同）
+# （ROS Master 11311 端口仅容器内使用，不对外暴露）
+
+FROM --platform=linux/arm64 ros:noetic-ros-base
+
+# ---- 基础环境 ----
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+# 让 python print 实时刷新，便于 docker logs 查看
+ENV PYTHONUNBUFFERED=1
+
+# ---- 系统依赖 ----
+RUN apt-get update && apt-get install -y \
+    ros-noetic-actionlib \
+    ros-noetic-rosbridge-suite \
+    python3-pip \
+    python3-rospy \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Python 依赖 ----
+RUN pip3 install --no-cache-dir websockets
+
+# ---- 源代码 ----
+WORKDIR /app
+COPY mock_chem_project_action_server.py .
+COPY start.sh .
+RUN chmod +x start.sh
+
+# ---- 端口 ----
+# 9090: rosbridge WebSocket（main.py 连接此端口）
+EXPOSE 9090
+
+# ---- 默认入口 ----
+# 容器启动时自动执行 start.sh：
+#   1. 启动 roscore（后台）
+#   2. 启动 rosbridge_server（后台，:9090）
+#   3. 启动 mock_chem_project_action_server --mode ros-node（前台）
+# 额外参数会透传到 mock 脚本，例如：
+#   docker run ... mock-ros-chem:latest --feedback-steps 5 --quiet
+ENTRYPOINT ["/bin/bash", "/app/start.sh"]

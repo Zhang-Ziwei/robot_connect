@@ -1,0 +1,27 @@
+{
+    "header": {
+        "seq": 204,
+        "stamp": {
+            "secs": 1698000030,
+            "nsecs": 567890
+        },
+        "frame_id": "base_link"
+    },
+    "cmd_id": "PUT_TO_001",
+    "cmd_type": "PUT_TO",
+    "params": {
+        "release_params": [
+            {
+                "bottle_id": "glass_bottle_1000_001",
+                "release_pose": "worktable_temp_001"
+            },
+            {
+                "bottle_id": "glass_bottle_1000_002",
+                "release_pose": "worktable_temp_001"
+            }
+        ],
+        "timeout": 10.0
+    },
+    "extra": {}
+}
+

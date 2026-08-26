@@ -1,0 +1,14 @@
+{
+  "header": {
+      "seq": 206,
+      "stamp": {
+          "secs": 1698000050,
+          "nsecs": 234567
+      },
+      "frame_id": "camera_link"
+  },
+  "cmd_id": "MANUAL_RESET_COMPLETED_001",
+  "cmd_type": "MANUAL_RESET_COMPLETED",
+  "params": {},
+  "extra": {}
+}

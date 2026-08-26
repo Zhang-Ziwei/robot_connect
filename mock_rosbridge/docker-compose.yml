@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  rosbridge:
+    build:
+      context: .
+      dockerfile: Dockerfile_arm
+    container_name: mock-rosbridge
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+

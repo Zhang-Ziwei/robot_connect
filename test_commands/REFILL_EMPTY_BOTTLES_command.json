@@ -1,0 +1,18 @@
+{
+    "header": {
+        "seq": 401,
+        "stamp": {
+            "secs": 1736755200,
+            "nsecs": 0
+        },
+        "frame_id": "camera_link"
+    },
+    "cmd_id": "refill_empty_bottles_001",
+    "cmd_type": "REFILL_EMPTY_BOTTLES",
+    "params": {
+        "robot_id": "robot_a",
+        "timeout": 60.0
+    },
+    "extra": {}
+}
+
