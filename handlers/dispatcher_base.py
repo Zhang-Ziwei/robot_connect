@@ -107,6 +107,8 @@ class BaseCmdDispatcher:
         self.reset_system_event = threading.Event()
         # 构建并缓存命令分发表（子类在此之后扩展）
         self._handler_map: Dict = self._build_handler_map()
+        # 子类按配置注册项目后写入；GET_TASK_STATE 用来对照编辑器当前画布
+        self.active_project: Optional[str] = None
 
     # ──────────────────────────────────────────────────────────────────────────
     # 命令分发
@@ -351,15 +353,15 @@ class BaseCmdDispatcher:
             self.reset_system_event.set()
 
             # 2. 停止所有机器人
-            for robot_id, robot in self.robots.items():
+            robots_snapshot = list(self.robots.items())
+            for robot_id, robot in robots_snapshot:
                 if robot:
-                    robot.stop_reconnect()
                     try:
-                        if robot.is_connected():
-                            robot.close()
+                        robot.stop_reconnect()
+                        robot.close()
                     except Exception:
                         pass
-                    logger.info("命令处理器", f"已停止 {robot_id} 的重连")
+                    logger.info("命令处理器", f"已停止 {robot_id} 的重连并断开")
 
             # 清除 start_working_event
             self.start_working_event.clear()
@@ -416,9 +418,14 @@ class BaseCmdDispatcher:
                 ErrorCode.TASK_NOT_FOUND,
                 state.get("message"),
                 current_task_id=state.get("current_task_id"),
+                active_project=self.active_project,
             )
 
-        return make_success_response("状态查询成功", data=state)
+        return make_success_response(
+            "状态查询成功",
+            data=state,
+            active_project=self.active_project,
+        )
 
     def handle_robot_b_action(self, cmd_data: Dict) -> Dict:
         """

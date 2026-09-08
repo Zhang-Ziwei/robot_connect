@@ -153,6 +153,19 @@ class FlowResult:
     trace: List[NodeRecord] = field(default_factory=list)
 
 
+# 编辑器下拉框用命令名，旧流程图用短名。fire / consume / is_waiting_for 视作同一信号。
+_SIGNAL_ALIAS_GROUPS = (
+    frozenset({"manual_reset", "MANUAL_RESET_COMPLETED"}),
+)
+
+
+def signal_aliases(name: str) -> tuple:
+    for group in _SIGNAL_ALIAS_GROUPS:
+        if name in group:
+            return tuple(group)
+    return (name,)
+
+
 class SignalBus:
     """
     命名信号总线，供 ``wait_for_command`` 节点与外部 HTTP 命令入口（比如 NEXT_STEP、
@@ -179,9 +192,10 @@ class SignalBus:
             return ev
 
     def fire(self, name: str, data: Any = None):
-        with self._lock:
-            self._data[name] = data
-        self._get_event(name).set()
+        for n in signal_aliases(name):
+            with self._lock:
+                self._data[n] = data
+            self._get_event(n).set()
 
     def wait(self, name: str, timeout: Optional[float] = None) -> bool:
         """返回 True=收到信号，False=超时"""
@@ -189,10 +203,15 @@ class SignalBus:
         return ok
 
     def consume(self, name: str) -> Any:
-        """取出信号携带的数据并清空事件，供下一次等待复用。"""
-        with self._lock:
-            data = self._data.pop(name, None)
-        self._get_event(name).clear()
+        """取出信号携带的数据并清空事件（含别名），供下一次等待复用。"""
+        data = None
+        for n in signal_aliases(name):
+            with self._lock:
+                if data is None and n in self._data:
+                    data = self._data.pop(n, None)
+                else:
+                    self._data.pop(n, None)
+            self._get_event(n).clear()
         return data
 
 
@@ -216,8 +235,24 @@ class FlowContext:
         self.extra: Dict[str, Any] = dict(extra or {})
 
     def get(self, name: str, default: Any = None) -> Any:
+        """
+        取流程变量。支持点号路径，例如 ``box_initial_area.shelf_type``
+        会先精确匹配整个键，没有再沿 dict 逐层往下取。
+        这样 HTTP 命令里的嵌套 params 可以直接用在条件判断和 ``{{ }}`` 模板里，
+        新增字段不必再改 Python。
+        """
         with self._lock:
-            return self.variables.get(name, default)
+            if name in self.variables:
+                return self.variables[name]
+            if "." not in name:
+                return default
+            cur: Any = self.variables
+            for part in name.split("."):
+                if isinstance(cur, dict) and part in cur:
+                    cur = cur[part]
+                else:
+                    return default
+            return cur
 
     def set(self, name: str, value: Any):
         with self._lock:
@@ -312,9 +347,35 @@ class FlowEngine:
         self.flow_loader = flow_loader
         self.signal_bus = signal_bus or SignalBus()
 
+        # 当前阻塞在 wait_for_command 上的信号名。外部命令入口据此判断
+        # "这条命令是该唤醒流程，还是该当成一条新任务受理"（见 waiting_signals）。
+        # 用集合是因为 parallel 分支下可能同时有多个节点在等不同信号。
+        self._waiting_signals: Dict[str, int] = {}
+        self._waiting_lock = threading.Lock()
+
         self._nodes: Dict[str, FlowNode] = {}
         self._edges_by_source: Dict[str, List[FlowEdge]] = {}
         self._parse_graph()
+
+    # ── 等待中的外部信号（供命令入口查询）──────────────────────────────────
+
+    def waiting_signals(self) -> set:
+        """返回此刻有节点正阻塞等待的信号名集合（线程安全，返回快照）。"""
+        with self._waiting_lock:
+            return {name for name, cnt in self._waiting_signals.items() if cnt > 0}
+
+    def is_waiting_for(self, name: str) -> bool:
+        """是否有节点正在等待名为 name 的信号（含别名）。"""
+        with self._waiting_lock:
+            return any(self._waiting_signals.get(n, 0) > 0 for n in signal_aliases(name))
+
+    def _mark_waiting(self, name: str, delta: int):
+        with self._waiting_lock:
+            cnt = self._waiting_signals.get(name, 0) + delta
+            if cnt > 0:
+                self._waiting_signals[name] = cnt
+            else:
+                self._waiting_signals.pop(name, None)
 
     # ── 图解析 & 校验 ────────────────────────────────────────────────────────
     
@@ -544,24 +605,56 @@ class FlowEngine:
         """
         event_name = node.params["event_name"]
         timeout = node.params.get("timeout")
+        # 命令携带的参数写进上下文时的变量名前缀。默认用信号名，避免多个等待节点
+        # 互相覆盖；填了 var_prefix 就用它，图上引用起来更短（{{cmd_shelf_level}}）。
+        prefix = node.params.get("var_prefix") or event_name
         poll_interval = 0.3
         deadline = None if timeout is None else time.time() + timeout
 
-        while True:
-            self._check_pause_stop()  # stop_event 已 set 时在此抛出 FlowStopped
-            if deadline is not None:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    return False, f"等待信号 '{event_name}' 超时（{timeout}s）"
-                wait_slice = min(poll_interval, remaining)
-            else:
-                wait_slice = poll_interval
+        self._mark_waiting(event_name, +1)
+        try:
+            while True:
+                self._check_pause_stop()  # stop_event 已 set 时在此抛出 FlowStopped
+                if deadline is not None:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        return False, f"等待信号 '{event_name}' 超时（{timeout}s）"
+                    wait_slice = min(poll_interval, remaining)
+                else:
+                    wait_slice = poll_interval
 
-            if self.signal_bus.wait(event_name, timeout=wait_slice):
-                data = self.signal_bus.consume(event_name)
-                if isinstance(data, dict):
-                    ctx.update({f"{event_name}_{k}": v for k, v in data.items()})
-                return True, f"收到信号 '{event_name}'"
+                if self.signal_bus.wait(event_name, timeout=wait_slice):
+                    data = self.signal_bus.consume(event_name)
+                    injected = []
+                    if isinstance(data, dict):
+                        # 命令 params 同时写两份：
+                        #   1. 原键（含嵌套 dict）——图上直接用 {{box_initial_area}} /
+                        #      {{box_initial_area.shelf_type}}，新增 HTTP 字段不用改代码
+                        #   2. {prefix}_{键} ——多个等待节点并存时避免互相覆盖
+                        for k, v in data.items():
+                            ctx.set(k, v)
+                            injected.append(k)
+                            if isinstance(v, dict):
+                                for nk, nv in v.items():
+                                    dotted = f"{k}.{nk}"
+                                    ctx.set(dotted, nv)
+                                    injected.append(dotted)
+                            if prefix:
+                                prefixed = f"{prefix}_{k}"
+                                if prefixed != k:
+                                    ctx.set(prefixed, v)
+                                    injected.append(prefixed)
+                        ctx.set(f"{prefix}_payload", data)
+                        ctx.set("cmd_payload", data)
+                        # 调动作 / 导航节点默认读 {{robot_id}}，不带前缀。
+                        # 唤醒命令里带了 robot_id 时同步写一份，否则图上只能手填。
+                        if data.get("robot_id"):
+                            ctx.set("robot_id", data["robot_id"])
+                            injected.append("robot_id")
+                    detail = f"，注入变量 {', '.join(injected)}" if injected else ""
+                    return True, f"收到信号 '{event_name}'{detail}"
+        finally:
+            self._mark_waiting(event_name, -1)
 
     def _builtin_parallel(self, node: FlowNode, ctx: FlowContext) -> (bool, str):
         branches: List[str] = node.params.get("branches", [])
@@ -642,7 +735,8 @@ BUILTIN_NODE_TYPE_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "label": "条件分支",
         "category": "控制流",
         "fields": [
-            {"name": "var", "type": "text", "label": "变量名", "required": True},
+            {"name": "var", "type": "text", "label": "变量名", "required": True,
+             "hint": "支持点号路径，如 box_initial_area.shelf_type（来自等待命令注入的嵌套 params）"},
             {"name": "op", "type": "select", "label": "比较符", "required": True,
              "options": list(_CONDITION_OPS.keys())},
             {"name": "value", "type": "text", "label": "比较值"},
@@ -678,8 +772,16 @@ BUILTIN_NODE_TYPE_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "label": "等待外部命令",
         "category": "控制流",
         "fields": [
-            {"name": "event_name", "type": "text", "label": "信号名", "required": True},
+            {"name": "event_name", "type": "select", "label": "等待的命令", "required": True,
+             "options_source": "commands", "allow_free_text": True,
+             "hint": "下拉列出本项目已注册的外部命令。换一条命令会换成该命令的演练默认参数。"},
+            {"name": "var_prefix", "type": "text", "label": "参数变量前缀",
+             "hint": "命令 params 会原样写入上下文（含嵌套字段，可用 {{box_initial_area.shelf_type}}），"
+                     "同时再写一份 {前缀}_{参数名}。留空则前缀用命令名。"},
             {"name": "timeout", "type": "number", "label": "超时秒数（留空=无限等待）"},
+            {"name": "dryrun_params", "type": "json", "label": "演练用命令参数",
+             "hint": "随上方「等待的命令」切换成该命令的默认入参，之后仍可改。"
+                     "结构与 HTTP params 相同（可含 robot_id）；分拣任务放在 jobs 里。"},
         ],
         "outputs": ["success", "failure"],
     },

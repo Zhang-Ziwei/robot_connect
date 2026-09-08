@@ -61,8 +61,13 @@
         "auto_set_after_map": true,
         "method": "auto",
         "map_path": "",
-        "x_pos": 0.0, "y_pos": 0.0, "z_pos": 0.0,
-        "x_ori": 0.0, "y_ori": 0.0, "z_ori": 0.0, "w_ori": 0.0,
+        "x_pos": 0.0,
+        "y_pos": 0.0,
+        "z_pos": 0.0,
+        "x_ori": 0.0,
+        "y_ori": 0.0,
+        "z_ori": 0.0,
+        "w_ori": 0.0,
         "check_timeout": 30,
         "retry_interval": 5,
         "max_retries": 5
@@ -84,34 +89,68 @@
         "_comment": "狭长走廊中间过渡点。end_yaw_half_width_deg：端点(±y)相对货架(±x)判定半宽，默认45°（旧10°易误判）。end_to_side/side_to_end：平移+旋转；side_to_side_same_retreat_dx：同侧货架先后退再对齐目标y；side_to_side_mid_1/2：异侧货架撤退点。",
         "angle_threshold_deg": 45.0,
         "end_yaw_half_width_deg": 45.0,
-        "angle_offset_deg":    90.0,
+        "angle_offset_deg": 90.0,
         "end_to_side_dx": 0.1,
         "end_to_side_dy": 0.0,
         "side_to_end_dx": 0.4,
         "side_to_end_dy": 0.0,
         "side_to_side_same_retreat_dx": 0.3,
-        "side_to_side_mid_1": [[-0.58, -0.80, 0.0, 0.0, 0.0, 0.71, 0.71]],
-        "side_to_side_mid_2": [[-0.58, 2.10, 0.0, 0.0, 0.0, -0.71, 0.71]]
+        "side_to_side_mid_1": [
+            [
+                -0.58,
+                -0.8,
+                0.0,
+                0.0,
+                0.0,
+                0.71,
+                0.71
+            ]
+        ],
+        "side_to_side_mid_2": [
+            [
+                -0.58,
+                2.1,
+                0.0,
+                0.0,
+                0.0,
+                -0.71,
+                0.71
+            ]
+        ]
+    },
+    "kaiao_component": {
+        "_comment": "KAIAO 零件单件重量(kg)，供现场维护。分拣放入货架后按类型累计；从货架取箱时累计重量 >= heavy_box_threshold_kg 则调用 pick_up_heavy_box，放箱成对调用 put_down_heavy_box。改完后 RESET_SYSTEM 或重启生效。",
+        "heavy_box_threshold_kg": 0.8,
+        "weight_kg": {
+            "black_screw": 0.2,
+            "black_tube": 0.2,
+            "black_square": 0.2,
+            "black_joystick": 0.5,
+            "black_fan": 0.2,
+            "yellow_hinge": 0.2,
+            "white_connector": 0.2,
+            "wire_harness": 0.2
+        }
     },
     "navigation_poses": {
         "_comment": "KAIAO 项目导航点位坐标",
         "KAIAO": {
-            "home":    [[-0.48, 1.20, 0.0, 0.0, 0.0, 0.71, 0.71]],
-            "agv_car0_0": [[-0.56, -0.80, 0.0, 0.0, 0.0, -0.71, 0.71]],
-            "shelf0_0":   [[-0.82, 1.32, 0.0, 0.0, 0.0, 1.0, 0.0]],
-            "shelf0_1":   [[-0.82, 0.89, 0.0, 0.0, 0.0, 1.0, 0.0]],
-            "shelf0_2":   [[-0.82, 0.44, 0.0, 0.0, 0.0, 1.0, 0.0]],
-            "shelf0_3":   [[-0.82, -0.05, 0.0, 0.0, 0.0, 1.0, 0.0]],
-            "shelf1_0":   [[-0.35, 1.25, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "shelf1_1":   [[-0.35, 0.82, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "shelf1_2":   [[-0.35, 0.48, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "shelf1_3":   [[-0.35, 0.02, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "component_car": [[-0.45, 2.17, 0.0, 0.0, 0.0, 0.71, 0.71]],
-            "point1":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "point2":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "point3":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "point4":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "point5":  [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]]
+            "agv_car0_0": [[-0.23, -1.51, 0, 0, 0, -0.71, 0.7]],
+            "component_car": [[-0.45, 2.17, 0, 0, 0, 0.71, 0.71]],
+            "home": [[-0.48, 1.2, 0, 0, 0, 0.71, 0.71]],
+            "point1": [[0, 0, 0, 0, 0, 0, 1]],
+            "point2": [[0, 0, 0, 0, 0, 0, 1]],
+            "point3": [[0, 0, 0, 0, 0, 0, 1]],
+            "point4": [[0, 0, 0, 0, 0, 0, 1]],
+            "point5": [[0, 0, 0, 0, 0, 0, 1]],
+            "shelf0_0": [[-0.82, 1.32, 0, 0, 0, 1, 0]],
+            "shelf0_1": [[-0.82, 0.89, 0, 0, 0, 1, 0]],
+            "shelf0_2": [[-0.62, -0.38, 0, 0, 0, 1, 0.02]],
+            "shelf0_3": [[-0.82, -0.05, 0, 0, 0, 1, 0]],
+            "shelf1_0": [[-0.35, 1.25, 0, 0, 0, 0, 1]],
+            "shelf1_1": [[-0.35, 0.82, 0, 0, 0, 0, 1]],
+            "shelf1_2": [[-0.35, 0.48, 0, 0, 0, 0, 1]],
+            "shelf1_3": [[-0.35, 0.02, 0, 0, 0, 0, 1]]
         }
     },
     "auto_charging": {
@@ -119,9 +158,9 @@
         "require_battery_on_startup": false,
         "battery_wait_timeout": 60,
         "check_interval": 60,
-        "low_threshold": 0.20,
+        "low_threshold": 0.2,
         "charging_done_threshold": 0.99,
-        "charging_accept_task_threshold": 0.30,
+        "charging_accept_task_threshold": 0.3,
         "charging_status_check_delay": 30,
         "charging_status_max_retries": 3,
         "charging_done_home_poses": {

@@ -1,0 +1,74 @@
+{
+    "_comment": "CONST_FLOW：康斯特压力表全自动检定。MQTT 开发默认连本机 8870，现场改 host。点位坐标先占位，在编辑器「点位」里改。工位变多时按 station_<sequenceNumber> 手动加。",
+    "active_project": "CONST_FLOW",
+    "robots": {
+        "robot_a": {
+            "host": "127.0.0.1",
+            "port": "9090",
+            "robot_type": "robot_a",
+            "enabled": true,
+            "navigation_map": "const_map"
+        }
+    },
+    "http_server": {
+        "port": 8090
+    },
+    "flow_api_server": {
+        "enabled": true,
+        "port": 8099
+    },
+    "flow_control": {
+        "_comment": "上位机/MQTT 开任务，START_WORKING 连上后可自动开跑。若要必须先 PROCESS_BEGINS，改为 true。",
+        "require_process_begins": false
+    },
+    "mqtt": {
+        "host": "192.168.120.32",
+        "port": 8870,
+        "username": "robot",
+        "password": "ConST123456",
+        "keepalive": 30
+    },
+    "const_robot": {
+        "robotId": "robot2026001",
+        "name": "具身智能机器人",
+        "manufacturer": "XX机器人公司",
+        "model": "NO1",
+        "hardwareVersion": "H1.0.0",
+        "softwareVersion": "S1.0.0"
+    },
+    "plc": {
+        "_comment": "检定系统指令走 mqtt:8870，不走这里。enabled=true 才另连 Modbus TCP 读寄存器；本机/无独立 PLC 时保持 false，节点直接视为就绪。",
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 502,
+        "unit_id": 1,
+        "ready_holding_registers": [
+            {"address": 0, "ready_value": 1, "name": "device_1"}
+        ]
+    },
+    "robot_connection": {
+        "reconnect_max_attempts": null,
+        "reconnect_interval": 5,
+        "ping_interval": 20,
+        "ping_timeout": 30
+    },
+    "navigation_map": {
+        "auto_set_on_connect": true,
+        "wait_idle_timeout": 60,
+        "service_timeout": 30,
+        "skip_if_same": true
+    },
+    "navigation_poses": {
+        "_comment": "格式：[[x,y,z,qx,qy,qz,qw], ...]。工位名 station_<检定系统 sequenceNumber>。",
+        "CONST_FLOW": {
+            "home": [[0, 0, 0, 0, 0, 0, 1]],
+            "inbound_shelf": [[0, 0, 0, 0, 0, 0, 1]],
+            "outbound_shelf": [[0, 0, 0, 0, 0, 0, 1]],
+            "box_wait": [[0, 0, 0, 0, 0, 0, 1]],
+            "station_1": [[0, 0, 0, 0, 0, 0, 1]],
+            "station_2": [[0, 0, 0, 0, 0, 0, 1]],
+            "station_3": [[0, 0, 0, 0, 0, 0, 1]],
+            "station_4": [[0, 0, 0, 0, 0, 0, 1]]
+        }
+    }
+}

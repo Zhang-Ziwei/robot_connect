@@ -73,9 +73,12 @@ Python 函数，只是从"写死的调用顺序"变成了"按需注册、按图�
   `FlowContext`，因此可以互相读写变量做同步）。
 - `x`/`y` 是图形化编辑器（`flow_editor/`）自己维护的画布坐标，引擎本身不使用、
   也不会因为缺失而报错；没有坐标的节点编辑器会自动按网格顺序摆开。
-- 字符串参数里可以用 `{{变量名}}` 引用 `FlowContext` 中的变量（模板语法）。
+-   字符串参数里可以用 `{{变量名}}` 引用 `FlowContext` 中的变量（模板语法）。
   整串恰好是 `"{{var}}"` 时会保留变量原始类型（不强制转成字符串），比如
   `"timeout": "{{my_timeout}}"` 在 `my_timeout` 是数字时会解析成数字而不是字符串。
+  变量名支持点号路径：`{{box_initial_area.shelf_type}}` 会先精确匹配整个键，
+  没有再沿 dict 往下取，这样 HTTP 命令里的嵌套 params 可以直接用在模板和
+  `condition` 上，新增字段不必改 Python。
   **`set_variable`/`condition` 节点的 `var` 字段本身也支持这种模板**，可以拼出
   动态变量名，比如先用 `find_slot` 找到槽位名存进 `p3_n`，再用
   `"var": "{{p3_n}}_state"` 去设置/判断"那个具体槽位"的状态，不需要为每个具体
@@ -90,7 +93,7 @@ Python 函数，只是从"写死的调用顺序"变成了"按需注册、按图�
 | `delay` | `{seconds}` | `default` | 延时（可被暂停/停止打断） |
 | `condition` | `{var, op, value}` | `true` / `false` | 条件分支，`op` 支持 `== != > < >= <= in not_in truthy falsy` |
 | `parallel` | `{branches, join, timeout}` | `success` / `failure` | 并行执行多条子链路；`join`: `all`（默认，全部完成才算成功）/`any` |
-| `wait_for_command` | `{event_name, timeout}` | `success` / `failure` | 阻塞等待外部信号（配合 `SignalBus`），超时或收到信号才继续 |
+| `wait_for_command` | `{event_name, var_prefix, timeout, dryrun_params}` | `success` / `failure` | 阻塞等待外部信号（配合 `SignalBus`），超时或收到信号才继续。命令 params **原样**写入上下文（含嵌套 dict，可用 `{{box_initial_area.shelf_type}}`），同时再写一份 `{前缀}_{键}`；整包另存 `{前缀}_payload` / `cmd_payload`。`dryrun_params` 是演练时自动打进来的示例入参，可在编辑器弹窗里改。 |
 | `sub_flow` | `{flow}` | `success` / `failure` | 加载并运行另一份流程 JSON（子流程复用），`flow` 是目标 `flow_id` |
 
 ## 项目专属节点类型
@@ -176,7 +179,32 @@ def build_handler_registry(robots, task_state_machine, get_robot=None, conveyor=
 
 ## SignalBus 与外部信号
 
-`wait_for_command` 节点靠 `SignalBus` 和外部事件（比如 HTTP 命令）打通：
+`wait_for_command` 节点靠 `SignalBus` 和外部事件（比如 HTTP 命令）打通。
+
+引擎会把"此刻有哪些节点在等信号"暴露出来，命令入口据此判断这条命令
+是该唤醒流程、还是该当成一条新任务受理：
+
+```python
+engine.waiting_signals()              # -> {"PICK_UP_BOX"}
+engine.is_waiting_for("PICK_UP_BOX")  # -> True
+```
+
+判断顺序很重要：**先判唤醒，再判新任务**。否则流程停在等待节点时，
+外部发来的唤醒命令会被任务状态机的忙碌检查挡掉，流程永远醒不过来
+（参见 `programs/KAIAO_FLOW/KAIAO_FLOW.py::dispatch`）。
+
+信号携带的数据会写入上下文，两份并存：
+
+1. **原键**（含嵌套对象、以及一层点号键如 `box_initial_area.shelf_type`），
+   图上可以直接 `{{box_initial_area}}` / 条件判断 `var: box_initial_area.shelf_type`。
+   新增 HTTP 字段不用改引擎。
+2. `{var_prefix}_{键}` ——多个等待节点并存时避免互相覆盖。
+   `var_prefix` 填 `cmd`、命令 params 是 `{"shelf_level": 3}` 时，图里还能用
+   `{{cmd_shelf_level}}`。留空则前缀用信号名。
+
+整包另存 `{{cmd_payload}}` 和 `{{<前缀>_payload}}`。带了 `robot_id` 时还会写一份
+不带前缀的 `{{robot_id}}`，方便导航 / 调动作节点直接引用。
+
 
 ```python
 bus = SignalBus()
@@ -202,10 +230,21 @@ bus.fire("MANUAL_RESET_COMPLETED", {"operator": "张三"})
   连接 mock rosbridge（`mock_rosbridge/mock_rosbridge_server.py`）的临时
   `RobotController`，跑一遍流程，收集每个节点的执行轨迹（`on_event` 回调）
   返回给前端在画布上高亮回放，不影响任何真实机器人。
+  所需本机端口无人监听时会自动拉起 mock，演练结束再关掉；已有 mock 在跑则复用。
 
 ## 流程文件存放位置
 
 `programs/<PROJECT>/flows/*.json`，每个文件是一份独立的流程图，通过
 `network/flow_api_server.py` 的 API 增删改查。文件名（不含 `.json`）就是
-`flow_id`，在 `PROCESS_BEGINS` 命令里可以用 `params.flow_id` 指定要跑哪一份，
-方便同一个项目保存多个流程变体后按需切换，而不需要重新部署。
+`flow_id`。现场由流程 JSON 顶层的 `enabled` 开关决定哪一份会被
+`PROCESS_BEGINS` / 业务命令拉起（编辑器工具栏「激活」）。
+若 Docker 挂载了 `/config/flows/`，保存优先写到那里（宿主机上，换镜像不会丢）；
+否则写回项目内置目录。
+
+**软件更新前请用编辑器「⬇ 输出」把流程下载到本机**（当前一份，或本项目全部打成迁移包），
+更新后再用同一按钮「导入」还原。单份输出就是磁盘上的流程图 JSON；迁移包带
+`"format": "robot_connect.flow_pack"`。导入时同名文件会先备份再覆盖。
+
+`PROCESS_BEGINS` 是流程总开关：`robot_config.flow_control.require_process_begins`
+默认 true（展会：START_WORKING 只连机器人，不会自动开跑）。上位机项目另有开任务
+指令时把该项设为 false。

@@ -17,6 +17,7 @@ core.flow_engine.FlowEngine 本身只负责控制流（顺序/条件/并行/循�
                         匹配的槽位并写入上下文变量，用来还原 WRC.py 里
                         ``SlotTracker.find_slot_by_state`` 的"动态选槽位"分支逻辑。
     update_step     —— 写入 ParallelTaskStateMachine，供 GET_TASK_STATE 查询回显
+    abort_flow      —— 中止整张流程图（set stop_event），用于分拣失败等不可恢复错误
 
 新增一个动作类型：写一个 `def xxx(node, ctx) -> bool` 函数，在 build_handler_registry()
 里加一行注册即可，同时在文末 NODE_TYPE_SCHEMAS 里补一份表单描述，不需要改
@@ -25,6 +26,7 @@ core/flow_engine.py。
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Dict, Optional
 
 from infrastructure.error_logger import get_error_logger
@@ -34,6 +36,7 @@ from core.flow_engine import FlowNode, FlowContext
 
 from programs.WRC_FLOW.constants import (
     NavigationPose, WRCFlowNavTolerance, WRCFlowService, WRC_FLOW_TASK_ACTION_SPEC,
+    WRCFlowPose,
 )
 
 logger = get_error_logger()
@@ -45,6 +48,7 @@ def build_handler_registry(
     task_state_machine,
     get_robot: Optional[Callable[[str], Optional["RobotController"]]] = None,
     conveyor: Optional[Any] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Callable]:
     """
     组装本项目的节点处理器注册表，传给 ``FlowEngine(handlers=...)``。
@@ -58,6 +62,8 @@ def build_handler_registry(
         conveyor          : 可选，programs.WRC.plc_modbus.ConveyorController 实例，
                              供 plc_action 节点使用；不传时 plc_action 节点直接跳过
                              （记日志 + 返回成功），不会阻塞流程。
+        stop_event        : 与 FlowEngine 共用的停止事件。abort_flow 节点会 set 它，
+                             从而打断并行分支里还在 delay / 等待的节点，整张图一起结束。
     """
 
     def _get_robot(robot_id: str):
@@ -77,6 +83,9 @@ def build_handler_registry(
         if robot is None:
             logger.error(_LOG, f"navigate 节点 {node.id}：机器人 {robot_id} 不存在")
             return False
+        if not robot.is_connected():
+            logger.error(_LOG, f"navigate 节点 {node.id}：机器人 {robot_id} 未连接（演练请先启动 mock_rosbridge）")
+            return False
 
         pose_name = ctx.render(node.params.get("pose"))
         waypoints = getattr(NavigationPose, pose_name, None)
@@ -85,7 +94,8 @@ def build_handler_registry(
             return False
 
         skip_if_at_pose = node.params.get("skip_if_at_pose", True)
-        if skip_if_at_pose and is_robot_at_pose(
+        dryrun = bool(ctx.extra.get("dryrun"))
+        if skip_if_at_pose and not dryrun and is_robot_at_pose(
             robot, waypoints,
             WRCFlowNavTolerance.DISTANCE, WRCFlowNavTolerance.HEADING,
             timeout=3.0,
@@ -99,7 +109,14 @@ def build_handler_registry(
             distance_tolerance=WRCFlowNavTolerance.DISTANCE,
             heading_tolerance=WRCFlowNavTolerance.HEADING,
         )
-        result = send_navigation_action(robot, goal, timeout=node.params.get("timeout", 180.0))
+        nav_timeout = float(node.params.get("timeout", 180.0) or 180.0)
+        retry = True
+        if dryrun:
+            nav_timeout = min(nav_timeout, 12.0)
+            retry = False
+        result = send_navigation_action(
+            robot, goal, timeout=nav_timeout, retry_on_disconnect=retry,
+        )
         ctx.set("last_nav_pose", pose_name)
         ctx.set("last_nav_result", str(getattr(result, "state", result)))
         if not result.succeeded:
@@ -115,12 +132,21 @@ def build_handler_registry(
         if robot is None:
             logger.error(_LOG, f"send_operation 节点 {node.id}：机器人 {robot_id} 不存在")
             return False
+        if not robot.is_connected():
+            logger.error(_LOG, f"send_operation 节点 {node.id}：机器人 {robot_id} 未连接（演练请先启动 mock_rosbridge）")
+            return False
 
         call_type = node.params.get("call_type", "action")
         task = ctx.render(node.params.get("task"))
-        area = ctx.render(node.params.get("area", ""))
+        area = ctx.render(node.params.get("area", "")) or ""
+        # 图上可以写 P1 / {{p3_n}}（槽位名），发给机器人必须是 point_1 / point_3_1。
+        mapped = getattr(WRCFlowPose, str(area), None)
+        if mapped:
+            area = mapped
         extra_params = ctx.render(node.params.get("extra_params", {}))
         timeout = node.params.get("timeout", 1200.0)
+        if ctx.extra.get("dryrun"):
+            timeout = min(float(timeout or 1200), 15.0)
         # service 走哪个 ROS service：默认 ROBOT_TASK（零件抓放/装配），
         # 搬箱子（pick_up_box/put_down_box）需要显式传 params.service="robot_task_geely"，
         # 对照 programs/WRC/WRC.py 里 _send_component_service 用 ROBOT_TASK、
@@ -210,12 +236,23 @@ def build_handler_registry(
             task_state_machine.update_step(robot_id, step_label, message)
         return True
 
+    def handle_abort_flow(node: FlowNode, ctx: FlowContext) -> bool:
+        """分拣等关键步骤失败时中止整张图（含并行的另一台机器人）。"""
+        reason = ctx.render(node.params.get("message") or node.label or "流程中止")
+        logger.error(_LOG, f"abort_flow 节点 {node.id}：{reason}")
+        if task_state_machine is not None:
+            task_state_machine.set_error(reason)
+        if stop_event is not None:
+            stop_event.set()
+        return False
+
     return {
         "navigate": handle_navigate,
         "send_operation": handle_send_operation,
         "plc_action": handle_plc_action,
         "find_slot": handle_find_slot,
         "update_step": handle_update_step,
+        "abort_flow": handle_abort_flow,
     }
 
 
@@ -228,36 +265,6 @@ def build_handler_registry(
 _ROBOT_ID_OPTIONS = ["robot_a", "robot_b", "robot_c"]
 
 NODE_TYPE_SCHEMAS: Dict[str, Dict] = {
-    "navigate": {
-        "label": "导航到点位",
-        "category": "机器人动作",
-        "fields": [
-            {"name": "pose", "type": "select", "label": "目标点位", "required": True,
-             "options": ["home", "P1", "P2", "P3_1", "P4"]},
-            {"name": "robot_id", "type": "select", "label": "机器人",
-             "options": _ROBOT_ID_OPTIONS, "default": "robot_a"},
-            {"name": "skip_if_at_pose", "type": "checkbox", "label": "已在该点位时跳过导航", "default": True},
-            {"name": "timeout", "type": "number", "label": "超时秒数", "default": 180},
-        ],
-        "outputs": ["success", "failure"],
-    },
-    "send_operation": {
-        "label": "发送操作动作",
-        "category": "机器人动作",
-        "fields": [
-            {"name": "call_type", "type": "select", "label": "调用方式", "required": True,
-             "options": ["action", "service"], "default": "action"},
-            {"name": "service", "type": "select", "label": "Service 通道（call_type=service 时生效）",
-             "options": ["robot_task", "robot_task_geely"], "default": "robot_task"},
-            {"name": "task", "type": "text", "label": "任务名(task)", "required": True},
-            {"name": "area", "type": "text", "label": "区域(area)"},
-            {"name": "extra_params", "type": "json", "label": "附加参数(extra_params)"},
-            {"name": "robot_id", "type": "select", "label": "机器人",
-             "options": _ROBOT_ID_OPTIONS, "default": "robot_a"},
-            {"name": "timeout", "type": "number", "label": "超时秒数", "default": 1200},
-        ],
-        "outputs": ["success", "failure"],
-    },
     "plc_action": {
         "label": "PLC/传送带动作",
         "category": "机器人动作",
@@ -268,6 +275,15 @@ NODE_TYPE_SCHEMAS: Dict[str, Dict] = {
             {"name": "timeout", "type": "number", "label": "超时秒数", "default": 60},
         ],
         "outputs": ["success", "failure"],
+    },
+    "abort_flow": {
+        "label": "中止整个流程",
+        "category": "流程辅助",
+        "fields": [
+            {"name": "message", "type": "text", "label": "结束原因",
+             "hint": "写入任务状态机错误信息；会 set stop_event，并行分支一并退出"},
+        ],
+        "outputs": ["failure"],
     },
     "find_slot": {
         "label": "查找槽位（按状态）",
@@ -280,15 +296,12 @@ NODE_TYPE_SCHEMAS: Dict[str, Dict] = {
         ],
         "outputs": ["success", "failure"],
     },
-    "update_step": {
-        "label": "记录状态步骤",
-        "category": "状态记录",
-        "fields": [
-            {"name": "step", "type": "text", "label": "步骤名称", "required": True},
-            {"name": "message", "type": "text", "label": "描述信息"},
-            {"name": "robot_id", "type": "select", "label": "机器人",
-             "options": _ROBOT_ID_OPTIONS, "default": "robot_a"},
-        ],
-        "outputs": ["default"],
-    },
 }
+# 注意：navigate / send_operation / update_step 都是跨项目通用节点，
+# 定义在 core/common_nodes.py，本文件只提供它们的 WRC 实现。
+
+#: WRC 的 service 通道：搬箱走吉利专用通道，零件抓放/装配走默认通道
+SERVICE_OPTIONS = ["robot_task", "robot_task_geely"]
+
+#: 本项目实现了哪些通用节点
+COMMON_NODES = ["navigate", "send_operation", "update_step"]

@@ -36,7 +36,8 @@ RUN pip install --no-cache-dir \
     pymodbus>=3.8.0 \
     requests>=2.32.0 \
     numpy>=2.0.0 \
-    pandas>=2.0.0
+    pandas>=2.0.0 \
+    paho-mqtt>=1.6.0
 
 # 复制项目源代码
 COPY . .

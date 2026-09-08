@@ -8,6 +8,7 @@ echo "启动时间: $(date)"
 echo "Python环境: robot_connect (conda)"
 echo "HTTP端口: 8090"
 echo "WebSocket端口: 8091"
+echo "图形化编辑器: 8099"
 echo ""
 
 # 检查外部配置文件

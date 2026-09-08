@@ -1,0 +1,57 @@
+{
+  "enabled": false,
+  "start": "send_operation_1",
+  "nodes": [
+    {
+      "id": "navigate_1",
+      "type": "navigate",
+      "label": "导航到点位",
+      "params": {
+        "robot_id": "robot_a",
+        "skip_if_at_pose": true,
+        "timeout": 180,
+        "pose": "P1"
+      },
+      "x": 511,
+      "y": 355
+    },
+    {
+      "id": "send_operation_2",
+      "type": "send_operation",
+      "label": "发送操作动作",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "robot_id": "robot_a",
+        "timeout": 1200,
+        "task": "pick_up_component_B",
+        "area": "P1"
+      },
+      "x": 822,
+      "y": 389
+    },
+    {
+      "id": "send_operation_1",
+      "type": "send_operation",
+      "label": "发送操作动作",
+      "params": {
+        "call_type": "service",
+        "timeout": 1200,
+        "service": "robot_task",
+        "task": "put_down_component_A",
+        "area": "point_4",
+        "robot_id": "robot_b"
+      },
+      "x": 429,
+      "y": 165
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_1787723577539",
+      "source": "navigate_1",
+      "target": "send_operation_2",
+      "when": "success"
+    }
+  ]
+}

@@ -7,7 +7,7 @@
 - navigate_to_home_before_task : 充电中接到任务时先导航回 home 点
 - send_navigation_action       : 发送导航 Action 目标（复用 robot.send_action）
 - cancel_navigation_action     : 取消导航 Action
-- get_robot_odom               : 读取机器人当前里程计位姿（Odom_Info 字典）
+- get_robot_odom               : 读取当前导航位姿（仅 `/zj_humanoid/navigation/odom_info`）
 - is_robot_at_pose             : 判断机器人是否在目标点位附近（可跳过重复导航）
 
 导航 Action 定义 (Navigation.action):
@@ -940,15 +940,18 @@ def get_current_navigation_map(
         return None
     
     code = values.get("code", -1)
+    map_info = values.get("map_info", {}) or {}
+    map_name = map_info.get("map_name") or None
     if code != 0:
         logger.info(
             "navigation_utils",
-            f"get_cur_map_info code={code}, message={values.get('message', '')}",
+            f"get_cur_map_info code={code}, message={values.get('message', '')}, "
+            f"map_name={map_name!r}",
         )
-        return None
+        # 地图加载失败时 map_name 经常是空串；若仍带了名字，留给 skip_if_same 判断
+        return map_name
     
-    map_info = values.get("map_info", {}) or {}
-    return map_info.get("map_name") or None
+    return map_name
 
 
 def set_navigation_map(
@@ -1203,39 +1206,51 @@ def set_navigation_localization(
 
 # ── 里程计查询 ────────────────────────────────────────────────────────────────
 
+def _odom_from_nav_msgs(raw: Dict) -> Optional[Dict]:
+    if not raw:
+        return None
+    pose_outer  = raw.get("pose") or {}
+    pose        = pose_outer.get("pose") or {}
+    position    = pose.get("position") or {}
+    orientation = pose.get("orientation") or {}
+
+    twist_outer = raw.get("twist") or {}
+    twist       = twist_outer.get("twist") or {}
+    linear      = twist.get("linear") or {}
+    angular     = twist.get("angular") or {}
+
+    if position.get("x") is None and position.get("y") is None:
+        return None
+    return {
+        "Position_Point_X_In":  position.get("x"),
+        "Position_Point_Y_In":  position.get("y"),
+        "Position_Point_Z_In":  position.get("z"),
+        "Orientation_X_In":     orientation.get("x"),
+        "Orientation_Y_In":     orientation.get("y"),
+        "Orientation_Z_In":     orientation.get("z"),
+        "Orientation_W_In":     orientation.get("w"),
+        "Vector_Linear_X_In":   linear.get("x"),
+        "Vector_Linear_Y_In":   linear.get("y"),
+        "Vector_Linear_Z_In":   linear.get("z"),
+        "Vector_Angular_X_In":  angular.get("x"),
+        "Vector_Angular_Y_In":  angular.get("y"),
+        "Vector_Angular_Z_In":  angular.get("z"),
+    }
+
+
 def get_robot_odom(
     robot: "RobotController",
     timeout: float = 5.0,
 ) -> Optional[Dict]:
     """
-    获取机器人当前里程计位姿与速度（订阅 ``ROSTopic.ROBOT_MOTION_STATE``）。
+    获取机器人当前导航位姿与速度（订阅 ``ROSTopic.ROBOT_MOTION_STATE``，
+    即 ``/zj_humanoid/navigation/odom_info``）。
 
-    本函数是对 ``wait_for_topic_message`` + ROS nav_msgs/Odometry 解析的公共封装，
-    供任意模块调用，无需通过 ``CmdHandler``，避免循环导入。
-
-    参数:
-        robot   : RobotController 实例
-        timeout : 等待 topic 消息的超时时间（秒），默认 5 s
+    只用导航组这份里程计（地图坐标系）。导航未开时 topic 无数据，返回 None，
+    不会改去读底盘 odom。
 
     返回:
-        成功时返回 ``Odom_Info`` 字典::
-
-            {
-                "Position_Point_X_In": float | None,   # x (m)
-                "Position_Point_Y_In": float | None,   # y (m)
-                "Position_Point_Z_In": float | None,   # z (m)
-                "Orientation_X_In":    float | None,   # 四元数 x
-                "Orientation_Y_In":    float | None,   # 四元数 y
-                "Orientation_Z_In":    float | None,   # 四元数 z
-                "Orientation_W_In":    float | None,   # 四元数 w
-                "Vector_Linear_X_In":  float | None,   # 线速度 x (m/s)
-                "Vector_Linear_Y_In":  float | None,
-                "Vector_Linear_Z_In":  float | None,
-                "Vector_Angular_X_In": float | None,   # 角速度 x (rad/s)
-                "Vector_Angular_Y_In": float | None,
-                "Vector_Angular_Z_In": float | None,
-            }
-
+        成功时返回 ``Odom_Info`` 字典（Position / Orientation / Vector_*）；
         失败（超时 / 连接断开 / 解析异常）时返回 ``None``。
     """
     try:
@@ -1245,36 +1260,9 @@ def get_robot_odom(
             msg_type=ROSTopicMessageType.ROBOT_MOTION_STATE,
             timeout=timeout,
             retry_on_disconnect=False,
-            sleep_time=0,
+            sleep_time=0.2,
         )
-        if not raw:
-            return None
-
-        pose_outer  = raw.get("pose") or {}
-        pose        = pose_outer.get("pose") or {}
-        position    = pose.get("position") or {}
-        orientation = pose.get("orientation") or {}
-
-        twist_outer = raw.get("twist") or {}
-        twist       = twist_outer.get("twist") or {}
-        linear      = twist.get("linear") or {}
-        angular     = twist.get("angular") or {}
-
-        return {
-            "Position_Point_X_In":  position.get("x"),
-            "Position_Point_Y_In":  position.get("y"),
-            "Position_Point_Z_In":  position.get("z"),
-            "Orientation_X_In":     orientation.get("x"),
-            "Orientation_Y_In":     orientation.get("y"),
-            "Orientation_Z_In":     orientation.get("z"),
-            "Orientation_W_In":     orientation.get("w"),
-            "Vector_Linear_X_In":   linear.get("x"),
-            "Vector_Linear_Y_In":   linear.get("y"),
-            "Vector_Linear_Z_In":   linear.get("z"),
-            "Vector_Angular_X_In":  angular.get("x"),
-            "Vector_Angular_Y_In":  angular.get("y"),
-            "Vector_Angular_Z_In":  angular.get("z"),
-        }
+        return _odom_from_nav_msgs(raw)
     except Exception as e:
         logger.warning("navigation_utils", f"get_robot_odom 异常: {e}")
         return None

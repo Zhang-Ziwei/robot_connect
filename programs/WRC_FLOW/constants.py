@@ -35,13 +35,18 @@ class BoxSlotState(str, Enum):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class WRCFlowPose:
-    """WRC_FLOW 各导航点位名称（与 ROS area 字段一致）"""
-    HOME = "home"
-    P1   = "P1"
-    P2   = "P2"
-    P3_1 = "P3_1"
-    P3_2 = "P3_2"
-    P4   = "P4"
+    """
+    ROS service/action 的 area 字段值。
+
+    导航走 robot_config 的点位 key（P1 / P3_1 / P4），发给机器人的 area 是 point_*。
+    与 programs/WRC/constants.py 的 WRCPose 一致。
+    """
+    P0   = "point_0"
+    P1   = "point_1"
+    P2   = "point_2"
+    P3_1 = "point_3_1"
+    P3_2 = "point_3_2"
+    P4   = "point_4"
 
 
 _WRC_FLOW_POSE_DEFAULTS = {
@@ -61,10 +66,14 @@ class NavigationPose:
     pass
 
 
+# allow_extra_keys=True：本项目支持在图形编辑器里增删点位，配置文件里比上面 defaults
+# 多出来的点位是正常操作而不是拼写错误，必须一并加载，否则新加的点位存进了配置却
+# 永远不生效，navigate 时只会报"未知点位"。
 _wrc_flow_poses = load_nav_poses(
     project="WRC_FLOW",
     defaults=_WRC_FLOW_POSE_DEFAULTS,
     project_config_dir=os.path.dirname(__file__) if get_active_project() == "WRC_FLOW" else None,
+    allow_extra_keys=True,
 )
 for _pose_key, _pose_val in _wrc_flow_poses.items():
     setattr(NavigationPose, _pose_key, _pose_val)
@@ -113,6 +122,9 @@ class WRCFlowTask:
     # 搬箱子（Service，ROBOT_TASK_GEELY）
     PICK_UP_BOX  = "pick_up_box"
     PUT_DOWN_BOX = "put_down_box"
+
+    # 拆垛 / 向 P1、P2 各放一箱（Service，ROBOT_TASK，robot_c；不传 area）
+    PICK_BOX_TO_SP = "pick_box_to_sp"
 
     # 装配（Service，ROBOT_TASK，robot_b）
     ASSEMBLY             = "assembly"

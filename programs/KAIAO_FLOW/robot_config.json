@@ -1,0 +1,25 @@
+{
+    "_comment": "KAIAO_FLOW 项目配置。本文件只覆盖与现场相关的 robots / 端口；自动充电、回调、navigation_map 运行时段等由 load_config 从 programs/KAIAO/robot_config.json 浅合并进来。导航点位仍写在 KAIAO 的 navigation_poses.KAIAO。地图名必须与机器人 get_map_list 返回的一致（现场是 kion_com_3，不是 kaiao_com_3）。",
+    "active_project": "KAIAO_FLOW",
+    "robots": {
+        "robot_a": {
+            "host": "127.0.0.1",
+            "port": "9090",
+            "robot_type": "robot_a",
+            "enabled": true,
+            "navigation_map": "kion_com_3"
+        }
+    },
+    "http_server": {
+        "port": 8090
+    },
+    "flow_api_server": {
+        "_comment": "图形化流程编辑器。main.py 启动时自动监听 0.0.0.0:8099，其他机器浏览器打开 http://<设备IP>:8099/。enabled=false 可关闭。",
+        "enabled": true,
+        "port": 8099
+    },
+    "flow_control": {
+        "_comment": "上位机用 PICK_BOX_TO_SP 等开任务，不强制 PROCESS_BEGINS。若要连上机器人后必须先开开关，改为 true。",
+        "require_process_begins": false
+    }
+}

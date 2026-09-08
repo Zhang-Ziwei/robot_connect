@@ -79,7 +79,7 @@ programs/WRC_FLOW/
 
 | cmd_type | 说明 |
 |---|---|
-| `PROCESS_BEGINS` | 加载 `flows/<flow_id>.json`（默认 `wrc_flow_main`）并在后台开始执行 |
+| `PROCESS_BEGINS` | 流程总开关：打开当前已激活的图。展会必须先发这条（`flow_control.require_process_begins` 默认 true）。图已在跑且正等待该命令时只唤醒，不开第二份 |
 | `PROCESS_PAUSED` | 当前节点执行完后暂停 |
 | `PROCESS_RESUMED` | 恢复暂停的流程 |
 | `PROCESS_ENDED` | 结束流程 |
@@ -99,26 +99,28 @@ python -m network.flow_api_server
 
 演练模式使用 `dryrun_adapter.py` 里配置的 mock 机器人地址（对应
 `mock_rosbridge/mock_rosbridge_server.py` 默认端口 9090/9091），会自动：
-1. 检查两个端口是否可达，不可达就自动用子进程拉起
+1. 检查所需端口是否可达，不可达就自动用子进程拉起
    `mock_rosbridge/mock_rosbridge_server.py`（最多等 6 秒就绪）；仍不可达的
    机器人直接跳过 `connect()`（不去调用它），避免触发
    `RobotController` 内部"最长 N 次重试"的长时间阻塞，让相关节点在演练时
    明确报"机器人未连接"而不是把整个 HTTP 请求拖住半分钟
 2. 自动周期性触发 `manual_reset` 等信号（见 `AUTO_FIRE_SIGNALS`），模拟
    "现场有人在按人工复位按钮"
-3. 演练结束后断开这些临时连接
+3. 演练结束后断开这些临时连接；若 mock 是这次演练拉起的，一并关掉
+   （用户自己开着的 mock 不会被关）
 
 ## 已实现的示例流程（`flows/wrc_flow_main.json`）
 
 用 `parallel` 节点完整对照复刻了 `programs/WRC/WRC.py` 里
 `_execute_trans_component_async`（robot_a 分拣搬运）与
-`_execute_assemble_async`（robot_b 装配）两条并行循环，包括真实代码里的
-动态选槽位、P4 三态分支等控制流细节（一共 76 个节点、104 条边）：
+`_execute_assemble_async`（robot_b 装配）两条并行循环，并在人工复位后
+由 robot_c 执行 `pick_box_to_sp` 拆垛（与 `WRC.py` 一致，不传 area），
+包括真实代码里的动态选槽位、P4 三态分支等控制流细节：
 
 ```
 p_start (parallel: join=all)
 ├── robot_a 分拣搬运循环：
-│   a1 等待人工复位信号 → P1→FULL
+│   a1 等待人工复位 → robot_c pick_box_to_sp 拆垛（失败则再等复位）→ P1→FULL
 │   → 导航P1 → Service抓取零件A → find_slot 在P3找空箱槽位 n
 │   → 导航{n} → 放下零件A → {n}→HALF → 按P1余量更新P1状态
 │   → 导航P2 → 抓取零件B → 再导航{n} → 放下零件B → {n}→FULL
@@ -137,3 +139,5 @@ p_start (parallel: join=all)
 `p4_state` 等上下文变量），互相读写实现同步，等价于 `WRC.py` 里两个线程共享
 同一个 `SlotTracker` 实例组的效果。这只是一个演示起点：实际部署时应在
 图形化编辑器里按现场需求调整点位、task 名称、超时时间，或增删节点。
+当前导航坐标在「📍 点位」弹窗顶部读取（`/zj_humanoid/navigation/odom_info`），
+详见 `flow_editor/README.md`。

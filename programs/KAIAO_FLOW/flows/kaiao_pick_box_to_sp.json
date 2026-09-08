@@ -1,0 +1,349 @@
+{
+  "enabled": true,
+  "start": "wait_cmd",
+  "nodes": [
+    {
+      "id": "wait_cmd",
+      "type": "wait_for_command",
+      "label": "等待 PICK_BOX_TO_SP",
+      "params": {
+        "event_name": "PICK_BOX_TO_SP",
+        "var_prefix": "cmd",
+        "dryrun_params": {
+          "robot_id": "robot_a",
+          "box_initial_area": {
+            "shelf_num": [0, 1, 2],
+            "shelf_type": "shelf"
+          },
+          "box_target_area": {
+            "shelf_num": [0, 1, 0],
+            "shelf_type": "agv_car"
+          }
+        }
+      },
+      "x": 60,
+      "y": 40
+    },
+    {
+      "id": "bind_locations",
+      "type": "kaiao_bind_locations",
+      "label": "解析取放位置",
+      "params": {
+        "source_pick": "{{box_initial_area}}",
+        "source_put": "{{box_target_area}}",
+        "pick_nav_var": "pick_nav",
+        "put_nav_var": "put_nav",
+        "pick_area_var": "pick_area",
+        "put_area_var": "put_area",
+        "src_coords_var": "src_coords",
+        "dst_coords_var": "dst_coords",
+        "pick_level_var": "pick_shelf_level",
+        "put_level_var": "put_shelf_level",
+        "same_level_var": "same_level_movement"
+      },
+      "x": 354,
+      "y": 4
+    },
+    {
+      "id": "step_nav_pick",
+      "type": "update_step",
+      "label": "状态: 导航到取箱位",
+      "params": {
+        "step": "NAVIGATING",
+        "message": "导航到取箱位 {{pick_nav}}"
+      },
+      "x": 60,
+      "y": 200
+    },
+    {
+      "id": "nav_pick",
+      "type": "kaiao_navigate",
+      "label": "导航到取箱位",
+      "params": {
+        "area": "{{pick_nav}}",
+        "robot_id": "{{robot_id}}",
+        "skip_if_at_pose": true,
+        "mode": "auto",
+        "mid_send": "split",
+        "on_leave_shelf": "none"
+      },
+      "x": 294,
+      "y": 199
+    },
+    {
+      "id": "step_pick",
+      "type": "update_step",
+      "label": "状态: 抓箱",
+      "params": {
+        "step": "PICKING_UP",
+        "message": "抓取箱子 area={{pick_area}} {{src_coords}}"
+      },
+      "x": 560,
+      "y": 200
+    },
+    {
+      "id": "pick_box",
+      "type": "send_operation",
+      "label": "抓箱（自动选轻/重箱）",
+      "params": {
+        "call_type": "action",
+        "task": "auto_put",
+        "area": "{{pick_area}}",
+        "extra_params": {
+          "shelf_level": "{{pick_shelf_level}}"
+        },
+        "robot_id": "{{robot_id}}",
+        "timeout": 800
+      },
+      "x": 800,
+      "y": 200
+    },
+    {
+      "id": "step_nav_put",
+      "type": "update_step",
+      "label": "状态: 导航到放箱位",
+      "params": {
+        "step": "NAVIGATING_TARGET",
+        "message": "导航到放箱位 {{put_nav}}"
+      },
+      "x": 1050,
+      "y": 200
+    },
+    {
+      "id": "nav_put",
+      "type": "kaiao_navigate",
+      "label": "导航到放箱位（离架后校正）",
+      "params": {
+        "area": "{{put_nav}}",
+        "robot_id": "{{robot_id}}",
+        "skip_if_at_pose": false,
+        "mode": "auto",
+        "mid_send": "split",
+        "on_leave_shelf": "adjust_pose",
+        "adjust_area": "{{put_area}}",
+        "adjust_shelf_level": "{{put_shelf_level}}"
+      },
+      "x": 1300,
+      "y": 200
+    },
+    {
+      "id": "step_put",
+      "type": "update_step",
+      "label": "状态: 放箱",
+      "params": {
+        "step": "PUTTING_DOWN",
+        "message": "放置箱子 area={{put_area}} {{dst_coords}}"
+      },
+      "x": 1550,
+      "y": 200
+    },
+    {
+      "id": "put_box",
+      "type": "send_operation",
+      "label": "放箱",
+      "params": {
+        "call_type": "action",
+        "task": "put_down_box",
+        "area": "{{put_area}}",
+        "extra_params": {
+          "shelf_level": "{{put_shelf_level}}",
+          "same_level_movement": "{{same_level_movement}}"
+        },
+        "robot_id": "{{robot_id}}",
+        "timeout": 800
+      },
+      "x": 1790,
+      "y": 200
+    },
+    {
+      "id": "step_done",
+      "type": "update_step",
+      "label": "状态: 完成",
+      "params": {
+        "step": "DONE",
+        "message": "搬运完成"
+      },
+      "x": 2040,
+      "y": 200
+    },
+    {
+      "id": "mark_done",
+      "type": "set_variable",
+      "label": "标记：任务成功",
+      "params": {
+        "var": "task_done",
+        "value": true
+      },
+      "x": 2280,
+      "y": 200
+    },
+    {
+      "id": "mark_failed",
+      "type": "set_variable",
+      "label": "标记：任务失败",
+      "params": {
+        "var": "task_failed",
+        "value": true
+      },
+      "x": 1300,
+      "y": 380
+    },
+    {
+      "id": "send_operation_2",
+      "type": "send_operation",
+      "label": "发送操作动作",
+      "params": {
+        "call_type": "action",
+        "timeout": 1200,
+        "service": "robot_task",
+        "task": "put_down_box",
+        "area": "{{put_area}}",
+        "extra_params": {
+          "shelf_level": "{{put_shelf_level}}",
+          "same_level_movement": "{{same_level_movement}}"
+        },
+        "robot_id": "robot_a"
+      },
+      "x": 266,
+      "y": 740
+    },
+    {
+      "id": "send_operation_4",
+      "type": "send_operation",
+      "label": "发送操作动作",
+      "params": {
+        "call_type": "action",
+        "timeout": 1200,
+        "service": "robot_task",
+        "task": "adjust_pose",
+        "area": "agv_car",
+        "extra_params": {
+          "shelf_level": 1
+        },
+        "robot_id": "robot_a"
+      },
+      "x": 640,
+      "y": 644
+    },
+    {
+      "id": "kaiao_navigate_7",
+      "type": "kaiao_navigate",
+      "label": "导航到点位",
+      "params": {
+        "skip_if_at_pose": true,
+        "mode": "auto",
+        "mid_send": "split",
+        "on_leave_shelf": "none",
+        "adjust_shelf_level": "{{put_shelf_level}}",
+        "adjust_area": "shelf",
+        "area": "shelf0_2"
+      },
+      "x": 399,
+      "y": 446
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_wait",
+      "source": "wait_cmd",
+      "target": "bind_locations",
+      "when": "success"
+    },
+    {
+      "id": "e_wait_fail",
+      "source": "wait_cmd",
+      "target": "mark_failed",
+      "when": "failure"
+    },
+    {
+      "id": "e_bind",
+      "source": "bind_locations",
+      "target": "step_nav_pick",
+      "when": "success"
+    },
+    {
+      "id": "e_bind_fail",
+      "source": "bind_locations",
+      "target": "mark_failed",
+      "when": "failure"
+    },
+    {
+      "id": "e1",
+      "source": "step_nav_pick",
+      "target": "nav_pick",
+      "when": "default"
+    },
+    {
+      "id": "e2",
+      "source": "nav_pick",
+      "target": "step_pick",
+      "when": "success"
+    },
+    {
+      "id": "e3",
+      "source": "step_pick",
+      "target": "pick_box",
+      "when": "default"
+    },
+    {
+      "id": "e9",
+      "source": "step_nav_put",
+      "target": "nav_put",
+      "when": "default"
+    },
+    {
+      "id": "e10",
+      "source": "nav_put",
+      "target": "step_put",
+      "when": "success"
+    },
+    {
+      "id": "e11",
+      "source": "step_put",
+      "target": "put_box",
+      "when": "default"
+    },
+    {
+      "id": "e12",
+      "source": "put_box",
+      "target": "step_done",
+      "when": "success"
+    },
+    {
+      "id": "e13",
+      "source": "step_done",
+      "target": "mark_done",
+      "when": "default"
+    },
+    {
+      "id": "e14",
+      "source": "nav_pick",
+      "target": "mark_failed",
+      "when": "failure"
+    },
+    {
+      "id": "e15",
+      "source": "pick_box",
+      "target": "mark_failed",
+      "when": "failure"
+    },
+    {
+      "id": "e17",
+      "source": "nav_put",
+      "target": "mark_failed",
+      "when": "failure"
+    },
+    {
+      "id": "e18",
+      "source": "put_box",
+      "target": "mark_failed",
+      "when": "failure"
+    },
+    {
+      "id": "e4",
+      "source": "pick_box",
+      "target": "step_nav_put",
+      "when": "success"
+    }
+  ]
+}

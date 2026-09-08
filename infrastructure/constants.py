@@ -65,7 +65,7 @@ class ROSTopic:
     # 头部深度相机参数
     HEAD_CAMERA_DEPTH_PARAMS = "/zj_humanoid/sensor/realsense_head/depth/camera_info"
     # 机器人运动状态
-    ROBOT_MOTION_STATE = "/zj_humanoid/navigation/odom_info" # /zj_humanoid/navigation/odom_info 导航组的参数，以这个为准，但是导航没开就不会有值，/zj_humanoid/chassis/odom_info 底盘的参数
+    ROBOT_MOTION_STATE = "/zj_humanoid/navigation/odom_info"  # 导航里程计（地图坐标系）。查询当前导航位姿只用这个；导航未开时无数据。
     # 导航定位：订阅定位状态（module_common_msgs/ModuleStatus，status==2 表示成功）
     LOCATION_CODE = "/zj_humanoid/perception/location_code"
     # 机器人任务 Action Topics（/robot_task/*，标准 actionlib topic 协议）

@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from infrastructure.constants import (
-    RobotType, ROSTopic, ROSService, get_main_ros_service,
+    ROSTopic, ROSService, get_main_ros_service,
     ROSTopicMessageType, ROSServiceMessageType,
     ROBOT_WS_RECONNECT_MAX_ATTEMPTS, ROBOT_WS_RECONNECT_INTERVAL,
     ROBOT_WS_PING_INTERVAL, ROBOT_WS_PING_TIMEOUT
@@ -73,7 +73,7 @@ class RobotController:
         self.host = host
         self.port = port  # None表示不使用端口（WiFi连接时）
         self.robot_type = robot_type
-        self.robot_name = "Robot A" if robot_type == RobotType.ROBOT_A else "Robot B"
+        self.robot_name = str(robot_type or "robot").replace("_", " ").title()
         self.connected = False
         self.websocket = None
         self.mutex = threading.Lock()
@@ -135,7 +135,8 @@ class RobotController:
     def connect(self):
         """连接到机器人WebSocket服务，支持自动重试"""
         attempt = 0
-        self._stop_reconnect = False  # 重置停止标志
+        # 不在这里清掉 _stop_reconnect：RESET_SYSTEM 已经要求停机时，
+        # 业务层误调 connect() 不能把停机标志冲掉。START_WORKING 会新建实例。
         
         while True:
             # 检查是否应该停止重连
@@ -1095,13 +1096,19 @@ class RobotController:
                 
                 print(f"⚠ {self.robot_name} 连接异常 ({e})，{reconnect_interval}秒后尝试重连 [{reconnect_attempts}/{max_reconnect_attempts or '∞'}]...")
                 
-                # 标记连接已断开
                 self.connected = False
                 
-                # 等待后尝试重连
-                await asyncio.sleep(reconnect_interval)
+                waited = 0.0
+                while waited < float(reconnect_interval):
+                    if self._stop_reconnect:
+                        print(f"[DEBUG] {self.robot_name} 收到停止信号，退出监听器")
+                        break
+                    step = min(0.2, float(reconnect_interval) - waited)
+                    await asyncio.sleep(step)
+                    waited += step
+                if self._stop_reconnect:
+                    break
                 
-                # 尝试重新连接
                 if await self._async_reconnect():
                     print(f"✓ {self.robot_name} 监听器重连成功")
                     # 重新订阅之前的topics
@@ -1122,6 +1129,8 @@ class RobotController:
         Returns:
             bool: 是否连接成功
         """
+        if self._stop_reconnect:
+            return False
         try:
             uri = self._get_uri()
             print(f"[DEBUG] {self.robot_name} 尝试重连到 {uri}...")
@@ -1457,26 +1466,31 @@ class RobotController:
     # ==================== 连接关闭 ====================
 
     def close(self):
-        """关闭与机器人的连接"""
+        """关闭连接并停止事件循环 / 监听重连。未连接时也要停线程，否则会一直刷重连日志。"""
+        self.stop_reconnect()
+        websocket = None
+        loop = None
+        thread = None
         with self.mutex:
-            if self.connected and self.websocket and self.loop:
-                try:
-                    # 异步关闭连接
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.websocket.close(), 
-                        self.loop
-                    )
-                    future.result(5)  # 5秒超时
-                    print(f"{self.robot_name} disconnected from {self.host}:{self.port}")
-                except Exception as e:
-                    print(f"{self.robot_name} close error: {str(e)}")
-                
-                self.connected = False
-            
-            # 停止事件循环
-            if self.loop and self.loop.is_running():
-                self.loop.call_soon_threadsafe(self.loop.stop())
-            
-            # 等待线程结束
-            if self.thread and self.thread.is_alive():
-                self.thread.join()
+            self.connected = False
+            websocket = self.websocket
+            self.websocket = None
+            loop = self.loop
+            thread = self.thread
+
+        if websocket is not None and loop is not None and loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(websocket.close(), loop)
+                future.result(2)
+            except Exception as e:
+                print(f"{self.robot_name} close error: {str(e)}")
+            print(f"{self.robot_name} disconnected from {self.host}:{self.port}")
+
+        if loop is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+
+        if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
+            thread.join(timeout=3.0)

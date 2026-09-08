@@ -9,9 +9,12 @@ from infrastructure.constants import RobotType, MODBUS_PORT, HTTP_SERVER_PORT, W
 import core.process_steps
 from infrastructure.error_logger import get_error_logger
 from infrastructure.file_lock import ensure_single_instance
+from infrastructure.console_capture import start_console_capture
 from programs.TJSH.cmd_handler import init_cmd_handler, get_cmd_handler
 from handlers.dispatcher_base import set_system_activating
 from network.http_server import get_http_server
+from network.flow_api_server import FlowAPIServer
+from infrastructure.config_loader import get_flow_api_server_config
 from core.task_queue import get_task_queue
 from infrastructure.storage_manager import init_storage_manager, get_storage_manager
 from hardware.battery_monitor import init_battery_monitor, get_battery_monitor
@@ -26,6 +29,9 @@ def main():
     lock = ensure_single_instance("robot_control.lock")
     if not lock:
         sys.exit(1)
+
+    # 终端详细输出同时写入 logs/main_console.log，编辑器「主程序输出」页能实时看。
+    start_console_capture()
     
     # 初始化错误日志
     logger = get_error_logger()
@@ -209,6 +215,17 @@ def run_http_server_mode(robot_a, robot_b, plc_server, logger, lock):
     init_cmd_handler({})
     
     http_server.start()
+
+    # 图形化编辑器：与命令端口独立，监听 0.0.0.0 以便其他机器用 IP:8099 打开。
+    # 端口被占用时只告警，不拖垮主程序（现场可能已有一份编辑器在跑）。
+    flow_api_server = None
+    flow_cfg = get_flow_api_server_config() or {}
+    if flow_cfg.get("enabled", True):
+        flow_api_server = FlowAPIServer(host="0.0.0.0")
+        try:
+            flow_api_server.start()
+        except OSError:
+            flow_api_server = None
     
     # 启动WebSocket服务器（如果启用）
     websocket_server = None
@@ -288,6 +305,15 @@ def run_http_server_mode(robot_a, robot_b, plc_server, logger, lock):
         print(f"  curl http://localhost:{HTTP_SERVER_PORT}/queue/status")
         print("\n【查询任务状态】")
         print(f"  curl http://localhost:{HTTP_SERVER_PORT}/task/<task_id>")
+    
+    if flow_api_server and flow_api_server.running:
+        print("\n" + "="*70)
+        print("✓ 图形化流程编辑器已启动")
+        print("="*70)
+        print(f"监听地址: 0.0.0.0:{flow_api_server.port}")
+        if local_ip != "无法获取":
+            print(f"浏览器打开: http://{local_ip}:{flow_api_server.port}/")
+        print("="*70)
     
     print("\n按 Ctrl+C 停止服务器")
     print("="*70 + "\n")
@@ -474,6 +500,9 @@ def run_http_server_mode(robot_a, robot_b, plc_server, logger, lock):
         # 停止HTTP服务器
         if http_server.is_running():
             http_server.stop()
+
+        if flow_api_server:
+            flow_api_server.stop()
         
         # 停止WebSocket服务器
         if websocket_server:
@@ -537,14 +566,13 @@ def _connect_robot_with_reset_check(robot, cmd_handler):
 
 
 def _cleanup_robots(robots_dict):
-    """清理所有机器人连接"""
-    for robot_id, robot in robots_dict.items():
+    """清理所有机器人连接（未连接的也要停掉监听重连线程）"""
+    for robot_id, robot in list((robots_dict or {}).items()):
         if robot:
             try:
                 robot.stop_reconnect()
-                if robot.is_connected():
-                    robot.close()
-            except:
+                robot.close()
+            except Exception:
                 pass
 
 

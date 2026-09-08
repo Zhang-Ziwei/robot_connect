@@ -40,8 +40,17 @@ logger = get_error_logger()
 _LOG = "PoseLoader"
 
 # ── 支持的项目名称 ───────────────────────────────────────────────────────────
-# WRC_FLOW：图形化流程编排引擎的 WRC 试点，与 WRC 完全独立，不参与 "ALL" 模式
-SUPPORTED_PROJECTS = frozenset({"TJSH", "ATC", "WRC", "WRC_FLOW", "AJL", "WAIC", "KAIAO", "ALL"})
+# WRC_FLOW / KAIAO_FLOW：图形化流程编排引擎的试点项目，与各自的原项目完全独立，
+# 都不参与 "ALL" 模式（避免在 ALL 下悄悄抢走原项目的命令）。
+SUPPORTED_PROJECTS = frozenset({
+    "TJSH", "ATC", "WRC", "WRC_FLOW", "AJL", "WAIC", "KAIAO", "KAIAO_FLOW",
+    "CONST_FLOW", "ALL",
+})
+
+# 允许在 robot_config.json 里新增 defaults 之外点位的项目（见 load_nav_poses 的
+# allow_extra_keys 参数）。这些项目支持在图形编辑器里增删点位，配置里多出来的 key
+# 是正常操作而非拼写错误。这里要与各项目 constants.py 里传的 allow_extra_keys 保持一致。
+ALLOW_EXTRA_POSE_KEYS_PROJECTS = frozenset({"WRC_FLOW", "KAIAO", "KAIAO_FLOW", "CONST_FLOW"})
 
 # ── 项目配置优先级路径（共用于 active_project 与 navigation_poses）─────────
 _DOCKER_EXTERNAL_CONFIG = "/config/robot_config.json"
@@ -62,7 +71,7 @@ def get_active_project() -> str:
            （DEFAULT_ACTIVE_PROJECT，本地开发时修改此处切换项目）
 
     返回值：
-        "TJSH" / "ATC" / "WRC" / "WRC_FLOW" / "AJL" / "WAIC" / "KAIAO" / "ALL"
+        "TJSH" / "ATC" / "WRC" / "WRC_FLOW" / "AJL" / "WAIC" / "KAIAO" / "KAIAO_FLOW" / "CONST_FLOW" / "ALL"
     """
     # 优先级 1：Docker 外部挂载配置
     try:
@@ -182,6 +191,7 @@ def load_nav_poses(
     project: str,
     defaults: Dict[str, Any],
     project_config_dir: Optional[str] = None,
+    allow_extra_keys: bool = False,
 ) -> Dict[str, Any]:
     """
     加载指定项目的导航点位，带防呆回退机制。
@@ -192,9 +202,16 @@ def load_nav_poses(
                             同时作为"合法 key 集合"，防止 config 中的拼写错误污染
         project_config_dir: 项目配置文件所在目录（如 os.path.dirname(__file__)），
                             用于搜索项目内置 robot_config.json
+        allow_extra_keys:   config 中存在 defaults 里没有的点位时怎么处理。
+                            False（默认）：视为拼写错误，警告并忽略——适合点位集合
+                            由代码写死、config 只用来微调坐标的传统项目。
+                            True：格式合法就一并加载——适合 WRC_FLOW 这类支持在图形
+                            界面里增删点位的项目，否则新加的点位存进了配置文件却
+                            永远不会生效，navigate 时只会报"未知点位"。
 
     返回:
-        合并后的点位 dict，所有 defaults 中的 key 均存在，类型与 defaults 一致。
+        合并后的点位 dict，所有 defaults 中的 key 均存在，类型与 defaults 一致；
+        allow_extra_keys=True 时还会包含 config 里额外定义的点位。
     """
     expected_keys = set(defaults.keys())
 
@@ -230,9 +247,10 @@ def load_nav_poses(
     result: Dict[str, Any] = {}
     config_keys = set(raw_poses.keys())
 
-    # 防呆：config 中有但 defaults 中没有的 key → 警告（可能是拼写错误）
+    # config 中有但 defaults 中没有的 key
     extra_keys = config_keys - expected_keys
-    if extra_keys:
+    if extra_keys and not allow_extra_keys:
+        # 防呆：点位集合由代码写死的项目，多出来的 key 多半是拼错了
         logger.warning(
             _LOG,
             f"[{project}] config 中存在未知点位 key（已忽略，请检查拼写）: "
@@ -242,6 +260,24 @@ def load_nav_poses(
             f"⚠️  [PoseLoader/{project}] config 中存在未知点位 key，已忽略: "
             f"{sorted(extra_keys)}"
         )
+    elif extra_keys:
+        # 允许扩展的项目：格式合法就收下，格式非法的仍然丢弃（没有默认值可回退）
+        accepted, rejected = [], []
+        for key in sorted(extra_keys):
+            if _is_valid_pose(raw_poses[key]):
+                result[key] = _normalize_pose(raw_poses[key])
+                accepted.append(key)
+            else:
+                rejected.append(key)
+        if accepted:
+            logger.info(_LOG, f"[{project}] 加载 config 中新增的点位: {accepted}")
+        if rejected:
+            logger.warning(
+                _LOG,
+                f"[{project}] config 中新增点位格式非法（期望 7 元坐标或其列表），已忽略: "
+                f"{rejected}",
+            )
+            print(f"⚠️  [PoseLoader/{project}] 新增点位格式非法，已忽略: {rejected}")
 
     # 逐个 key 处理
     for key, default_val in defaults.items():
@@ -284,17 +320,41 @@ def reload_active_project_nav_poses() -> None:
 
     模块 import 时只加载一次；修改 /config/robot_config.json 后须通过本函数刷新。
     """
+    # _load_json 带进程级缓存，不清掉的话这里读到的还是启动时那份内容，
+    # "热重载"会变成一次空转（改了点位怎么发 RESET_SYSTEM 都不生效）。
+    _file_cache.clear()
+
     project = get_active_project()
     targets = []
 
-    if project in ("ALL", "KAIAO"):
+    if project == "CONST_FLOW":
+        from programs.CONST_FLOW.constants import (
+            NavigationPose as CONSTNav, _CONST_POSE_DEFAULTS,
+        )
+        import programs.CONST_FLOW.constants as const_c
+        targets.append((
+            "CONST_FLOW", CONSTNav, _CONST_POSE_DEFAULTS, os.path.dirname(const_c.__file__),
+        ))
+
+    if project == "WRC_FLOW":
+        # WRC_FLOW 支持在图形编辑器里增删点位，同样要能热重载。
+        # 它与 WRC 完全独立，不参与 "ALL" 模式（见 SUPPORTED_PROJECTS 注释）。
+        from programs.WRC_FLOW.constants import (
+            NavigationPose as WRCFlowNav, _WRC_FLOW_POSE_DEFAULTS,
+        )
+        import programs.WRC_FLOW.constants as wrc_flow_c
+        targets.append((
+            "WRC_FLOW", WRCFlowNav, _WRC_FLOW_POSE_DEFAULTS, os.path.dirname(wrc_flow_c.__file__),
+        ))
+
+    if project in ("ALL", "KAIAO", "KAIAO_FLOW"):
         from programs.KAIAO.constants import NavigationPose as KAIAONav, _KAIAO_POSE_DEFAULTS
         import programs.KAIAO.constants as kaiao_c
         targets.append((
             "KAIAO",
             KAIAONav,
             _KAIAO_POSE_DEFAULTS,
-            os.path.dirname(kaiao_c.__file__) if project == "KAIAO" else None,
+            os.path.dirname(kaiao_c.__file__) if project in ("KAIAO", "KAIAO_FLOW") else None,
         ))
 
     if project in ("ALL", "WAIC"):
@@ -351,7 +411,10 @@ def reload_active_project_nav_poses() -> None:
         ))
 
     for proj, nav_class, defaults, cfg_dir in targets:
-        poses = load_nav_poses(proj, defaults, project_config_dir=cfg_dir)
+        poses = load_nav_poses(
+            proj, defaults, project_config_dir=cfg_dir,
+            allow_extra_keys=proj in ALLOW_EXTRA_POSE_KEYS_PROJECTS,
+        )
         _apply_poses_to_class(nav_class, poses)
         logger.info(_LOG, f"[{proj}] 导航点位已热重载（{len(poses)} 个）")
         print(f"✓ [{proj}] 导航点位已重新加载")

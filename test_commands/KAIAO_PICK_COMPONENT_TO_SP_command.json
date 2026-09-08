@@ -9,19 +9,39 @@
   },
   "cmd_id": "PICK_COMPONENT_TO_SP_001",
   "cmd_type": "PICK_COMPONENT_TO_SP",
-  "params": {
-    "robot_id": "robot_a",
-    "box_initial_area": "component_car",
-    "component_type": "black_joystick",
-    "target": [{
-        "box_target_area": [0, 2, 2],
-        "component_number": 1
-      },
-      {
-        "box_target_area": [0, 1, 2],
-        "component_number": 1
-      }
-    ]
-  },
-  "extra": {}
+  "params": [
+    {
+      "box_initial_area": "component_car",
+      "box_num": 0,
+      "component_type": "black_screw",
+      "target": [
+        {
+          "box_target_area": [0, 0, 0],
+          "component_number": 1
+        },
+        {
+          "box_target_area": [0, 1, 0],
+          "component_number": 1
+        }
+      ]
+    },
+    {
+      "box_initial_area": "component_car",
+      "box_num": 1,
+      "component_type": "black_joystick",
+      "target": [
+        {
+          "box_target_area": [0, 0, 0],
+          "component_number": 1
+        },
+        {
+          "box_target_area": [0, 1, 0],
+          "component_number": 2
+        }
+      ]
+    }
+  ],
+  "extra": {
+    "robot_id": "robot_a"
+  }
 }

@@ -1,0 +1,237 @@
+{
+  "enabled": true,
+  "start": "wait_cmd",
+  "nodes": [
+    {
+      "id": "wait_cmd",
+      "type": "wait_for_command",
+      "label": "等待 PICK_COMPONENT_TO_SP",
+      "params": {
+        "event_name": "PICK_COMPONENT_TO_SP",
+        "var_prefix": "cmd",
+        "dryrun_params": {
+          "robot_id": "robot_a",
+          "jobs": [
+            {
+              "box_initial_area": "component_car",
+              "box_num": 0,
+              "component_type": "black_screw",
+              "target": [
+                {"box_target_area": [0, 0, 0], "component_number": 1}
+              ]
+            }
+          ]
+        }
+      },
+      "x": 60,
+      "y": 40
+    },
+    {
+      "id": "bind_jobs",
+      "type": "kaiao_bind_component_jobs",
+      "label": "解析分拣任务",
+      "params": {
+        "source_jobs": "{{jobs}}",
+        "queue_var": "component_queue",
+        "index_var": "piece_index",
+        "total_var": "piece_total"
+      },
+      "x": 340,
+      "y": 40
+    },
+    {
+      "id": "next_piece",
+      "type": "kaiao_next_component",
+      "label": "取下一件零件",
+      "params": {
+        "queue_var": "component_queue",
+        "index_var": "piece_index",
+        "has_piece_var": "has_piece"
+      },
+      "x": 620,
+      "y": 40
+    },
+    {
+      "id": "check_piece",
+      "type": "condition",
+      "label": "还有零件要搬？",
+      "params": {
+        "var": "has_piece",
+        "op": "truthy"
+      },
+      "x": 900,
+      "y": 40
+    },
+    {
+      "id": "step_nav_pick",
+      "type": "update_step",
+      "label": "状态: 导航到取件位",
+      "params": {
+        "step": "NAVIGATING",
+        "message": "导航到取件位 {{pick_nav}} box_num={{box_num}} [{{piece_idx}}/{{piece_total}}]"
+      },
+      "x": 60,
+      "y": 220
+    },
+    {
+      "id": "nav_pick",
+      "type": "kaiao_navigate",
+      "label": "导航到取件位",
+      "params": {
+        "area": "{{pick_nav}}",
+        "robot_id": "{{robot_id}}",
+        "skip_if_at_pose": true,
+        "mode": "auto",
+        "mid_send": "split",
+        "on_leave_shelf": "none"
+      },
+      "x": 320,
+      "y": 220
+    },
+    {
+      "id": "step_pick",
+      "type": "update_step",
+      "label": "状态: 抓零件",
+      "params": {
+        "step": "PICKING_COMPONENT",
+        "message": "抓取零件 {{comp_type}} box_num={{box_num}} [{{piece_idx}}/{{piece_total}}]"
+      },
+      "x": 580,
+      "y": 220
+    },
+    {
+      "id": "pick_comp",
+      "type": "send_operation",
+      "label": "抓零件",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "pick_up_component",
+        "area": "component_car",
+        "extra_params": {
+          "shelf_level": "{{box_num}}",
+          "box_num": "{{box_num}}",
+          "type": "{{comp_type}}",
+          "number": 1
+        },
+        "robot_id": "{{robot_id}}",
+        "timeout": 800
+      },
+      "x": 840,
+      "y": 220
+    },
+    {
+      "id": "step_nav_put",
+      "type": "update_step",
+      "label": "状态: 导航到放件位",
+      "params": {
+        "step": "NAVIGATING_TARGET",
+        "message": "导航到放件位 {{put_nav}} [{{piece_idx}}/{{piece_total}}]"
+      },
+      "x": 1100,
+      "y": 220
+    },
+    {
+      "id": "nav_put",
+      "type": "kaiao_navigate",
+      "label": "导航到放件位",
+      "params": {
+        "area": "{{put_nav}}",
+        "robot_id": "{{robot_id}}",
+        "skip_if_at_pose": true,
+        "mode": "auto",
+        "mid_send": "split",
+        "on_leave_shelf": "none"
+      },
+      "x": 1360,
+      "y": 220
+    },
+    {
+      "id": "step_put",
+      "type": "update_step",
+      "label": "状态: 放零件",
+      "params": {
+        "step": "PUTTING_COMPONENT",
+        "message": "放置零件至 {{put_nav}} level={{put_shelf_level}} [{{piece_idx}}/{{piece_total}}]"
+      },
+      "x": 1620,
+      "y": 220
+    },
+    {
+      "id": "put_comp",
+      "type": "send_operation",
+      "label": "放零件",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "put_down_component",
+        "area": "{{put_nav}}",
+        "extra_params": {
+          "shelf_level": "{{put_shelf_level}}",
+          "type": "{{comp_type}}",
+          "number": 1
+        },
+        "robot_id": "{{robot_id}}",
+        "timeout": 800
+      },
+      "x": 1880,
+      "y": 220
+    },
+    {
+      "id": "step_done",
+      "type": "update_step",
+      "label": "状态: 完成",
+      "params": {
+        "step": "DONE",
+        "message": "零件搬运完成 {{piece_total}} 件"
+      },
+      "x": 1180,
+      "y": 40
+    },
+    {
+      "id": "mark_done",
+      "type": "set_variable",
+      "label": "标记：任务成功",
+      "params": {
+        "var": "task_done",
+        "value": true
+      },
+      "x": 1440,
+      "y": 40
+    },
+    {
+      "id": "mark_failed",
+      "type": "set_variable",
+      "label": "标记：任务失败",
+      "params": {
+        "var": "task_failed",
+        "value": true
+      },
+      "x": 1100,
+      "y": 420
+    }
+  ],
+  "edges": [
+    { "id": "e_wait", "source": "wait_cmd", "target": "bind_jobs", "when": "success" },
+    { "id": "e_wait_fail", "source": "wait_cmd", "target": "mark_failed", "when": "failure" },
+    { "id": "e_bind", "source": "bind_jobs", "target": "next_piece", "when": "success" },
+    { "id": "e_bind_fail", "source": "bind_jobs", "target": "mark_failed", "when": "failure" },
+    { "id": "e_next", "source": "next_piece", "target": "check_piece", "when": "success" },
+    { "id": "e_next_fail", "source": "next_piece", "target": "mark_failed", "when": "failure" },
+    { "id": "e_has", "source": "check_piece", "target": "step_nav_pick", "when": "true" },
+    { "id": "e_empty", "source": "check_piece", "target": "step_done", "when": "false" },
+    { "id": "e_step_nav_pick", "source": "step_nav_pick", "target": "nav_pick", "when": "default" },
+    { "id": "e_nav_pick", "source": "nav_pick", "target": "step_pick", "when": "success" },
+    { "id": "e_nav_pick_fail", "source": "nav_pick", "target": "mark_failed", "when": "failure" },
+    { "id": "e_step_pick", "source": "step_pick", "target": "pick_comp", "when": "default" },
+    { "id": "e_pick", "source": "pick_comp", "target": "step_nav_put", "when": "success" },
+    { "id": "e_pick_fail", "source": "pick_comp", "target": "mark_failed", "when": "failure" },
+    { "id": "e_step_nav_put", "source": "step_nav_put", "target": "nav_put", "when": "default" },
+    { "id": "e_nav_put", "source": "nav_put", "target": "step_put", "when": "success" },
+    { "id": "e_nav_put_fail", "source": "nav_put", "target": "mark_failed", "when": "failure" },
+    { "id": "e_step_put", "source": "step_put", "target": "put_comp", "when": "default" },
+    { "id": "e_put", "source": "put_comp", "target": "next_piece", "when": "success" },
+    { "id": "e_put_fail", "source": "put_comp", "target": "mark_failed", "when": "failure" },
+    { "id": "e_done", "source": "step_done", "target": "mark_done", "when": "default" }
+  ]
+}

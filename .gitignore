@@ -71,6 +71,10 @@ run_file.zip
 .DS_Store
 Thumbs.db
 
+# ── 编辑器自动备份 / 运行锁 ──────────────────────────────────────────────────
+*.bak.*
+robot_control.lock
+
 # ── 本地覆盖配置（若需上库请用 robot_config.example.json）────────────────────
 # 含现场 IP/账号时可取消下一行注释，改为只提交 example
 # **/robot_config.json

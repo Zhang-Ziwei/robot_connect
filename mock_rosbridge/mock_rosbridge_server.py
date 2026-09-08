@@ -22,11 +22,12 @@
 """
 
 import asyncio
-import websockets
 import json
 import random
+import subprocess
 import time
 import argparse
+import websockets
 
 # ── 默认端口 → 机器人 ID 映射 ─────────────────────────────────────────────────
 HOST = "0.0.0.0"
@@ -65,6 +66,9 @@ TASK_ACTION_FEEDBACK = "/robot_task/feedback"
 TASK_ACTION_RESULT   = "/robot_task/result"
 TASK_ACTION_CANCEL   = "/robot_task/cancel"
 
+# 电池电量（CONST MQTT 心跳 / BatteryMonitor / GET_BATTERY_STATE）
+BATTERY_TOPIC = "/zj_humanoid/robot/battery_info"
+
 # NavigationState (navigation/NavigationState.msg)
 NAV_STATE_RUNNING = 2   # Running
 NAV_STATE_ARRIVED = 3   # Arrived（成功）
@@ -76,14 +80,68 @@ ACTIONLIB_SUCCEEDED = 3
 ACTIONLIB_ABORTED   = 4
 
 
+def _who_listens(port: int) -> str:
+    """查占用 port 的进程，方便提示「已经有一份 mock 在跑」。"""
+    try:
+        out = subprocess.check_output(
+            ["ss", "-lptn", f"sport = :{port}"],
+            stderr=subprocess.DEVNULL, text=True,
+        )
+        for line in out.splitlines():
+            if "users:" in line:
+                return line.strip()
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(
+            ["fuser", "-v", f"{port}/tcp"],
+            stderr=subprocess.STDOUT, text=True,
+        )
+        return " ".join(out.split())
+    except Exception:
+        pass
+    return ""
+
+
 class RobotState:
     """单台机器人的独立状态"""
     def __init__(self, robot_id: str):
         self.robot_id = robot_id
         self.nav_status = dict(NAV_STANDBY)
+        # sensor_msgs/BatteryState.percentage：0.0~1.0
+        self.battery_percentage = 0.85
+        self.battery_voltage = 24.5
+        self.battery_current = -1.2
+        self.battery_power_supply_status = 2  # 2=放电
 
     def __repr__(self):
         return f"RobotState({self.robot_id})"
+
+    def battery_msg(self) -> dict:
+        now = time.time()
+        sec = int(now)
+        nsec = int((now - sec) * 1e9)
+        return {
+            "header": {
+                "stamp": {"secs": sec, "nsecs": nsec},
+                "frame_id": "",
+                "seq": 0,
+            },
+            "voltage": self.battery_voltage,
+            "current": self.battery_current,
+            "charge": 0.0,
+            "capacity": 0.0,
+            "design_capacity": 0.0,
+            "percentage": self.battery_percentage,
+            "power_supply_status": self.battery_power_supply_status,
+            "power_supply_health": 1,
+            "power_supply_technology": 0,
+            "present": True,
+            "cell_voltage": [],
+            "cell_temperature": [],
+            "location": "",
+            "serial_number": "",
+        }
 
 
 class MockRosBridge:
@@ -194,6 +252,13 @@ class MockRosBridge:
             return ACTION_DELAY["put_down"]
         return ACTION_DELAY["default"]
 
+    def _task_return_params(self, task, area, robot_state: RobotState) -> str:
+        payload = {"robot_id": robot_state.robot_id, "task": task, "area": area}
+        if task == "pick_up_box":
+            payload["has_box"] = True
+            payload["gauge_count"] = 4
+        return json.dumps(payload)
+
     def _generate_response(self, service, task, area, args, robot_state: RobotState) -> dict:
         """生成统一的 service_response（兼容新旧协议）"""
         # 新协议响应格式（ATC）：success / error_msg / return_params
@@ -208,7 +273,7 @@ class MockRosBridge:
                 "values": {
                     "success":       True,
                     "error_msg":     "",
-                    "return_params": json.dumps({"robot_id": robot_state.robot_id, "task": task, "area": area}),
+                    "return_params": self._task_return_params(task, area, robot_state),
                 },
             }
 
@@ -432,7 +497,7 @@ class MockRosBridge:
         # 3. 推送成功 result
         result_msg = self._make_task_result_msg(
             goal_id, succeeded=True,
-            return_params=json.dumps({"task": task_name, "area": area}),
+            return_params=self._task_return_params(task_name, area, robot_state),
         )
         await _push(TASK_ACTION_RESULT, result_msg)
         print(f"  [{rid}] 任务 result   → success  task={task_name!r}")
@@ -467,6 +532,8 @@ class MockRosBridge:
             self.subscribed_topics[websocket].append(topic)
             if topic == "/navigation_status":
                 asyncio.create_task(self._publish_nav_status(websocket, topic, robot_state))
+            elif topic == BATTERY_TOPIC:
+                asyncio.create_task(self._publish_battery(websocket, topic, robot_state))
 
     async def handle_unsubscribe(self, websocket, data):
         topic = data.get("topic", "")
@@ -487,6 +554,20 @@ class MockRosBridge:
             await asyncio.sleep(0.5)
         print(f"  [{rid}] 停止发布 {topic}")
 
+    async def _publish_battery(self, websocket, topic, robot_state: RobotState):
+        rid = robot_state.robot_id
+        print(f"  [{rid}] 开始发布 {topic} (1Hz, {robot_state.battery_percentage * 100:.0f}%)")
+        while websocket in self.clients:
+            if websocket not in self.subscribed_topics or topic not in self.subscribed_topics[websocket]:
+                break
+            try:
+                msg = {"op": "publish", "topic": topic, "msg": robot_state.battery_msg()}
+                await websocket.send(json.dumps(msg))
+            except Exception:
+                break
+            await asyncio.sleep(1.0)
+        print(f"  [{rid}] 停止发布 {topic}")
+
 
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
@@ -501,21 +582,47 @@ async def main(port_to_robot: dict):
         print(f"  ws://{HOST}:{port}  →  {rid}")
     print()
     print("支持的操作：call_service / subscribe / unsubscribe / publish")
+    print("订阅即推送: /navigation_status (2Hz)  /zj_humanoid/robot/battery_info (1Hz, 85%)")
     print("新协议 (ATC): args.task + args.area + args.extra_params")
     print("旧协议 (旧项目): args.action + args.extra_params")
     print("=" * 60)
-    print("等待连接...\n")
 
     # 并发启动每个端口的 WebSocket 服务器（兼容 Python 3.9+）
+    # 某个端口已被占用时跳过，不把整份 mock 打死（常见原因：上一份 mock 还在后台跑）
     active_servers = []
-    for port in port_to_robot:
-        srv = await websockets.serve(
-            server.make_handler(port),
-            HOST,
-            port,
-            subprotocols=["rosbridge_v2"],
-        )
-        active_servers.append(srv)
+    skipped = []
+    for port, rid in port_to_robot.items():
+        try:
+            srv = await websockets.serve(
+                server.make_handler(port),
+                HOST,
+                port,
+                subprotocols=["rosbridge_v2"],
+            )
+            active_servers.append(srv)
+            print(f"  已监听 ws://{HOST}:{port}  →  {rid}")
+        except OSError as e:
+            occupant = _who_listens(port)
+            hint = f"  占用进程: {occupant}" if occupant else ""
+            print(
+                f"  跳过端口 {port}（{rid}）：已被占用"
+                f"{' — ' + e.strerror if getattr(e, 'strerror', None) else ''}"
+                f"{hint}"
+            )
+            skipped.append((port, rid, occupant))
+
+    if not active_servers:
+        print()
+        print("没有成功绑定任何端口，本进程退出。")
+        print("如果上一份 mock 还在后台跑，直接用那一份即可，不必再启动。")
+        print("要重新拉起：  pkill -f mock_rosbridge_server.py")
+        print("再执行：      python mock_rosbridge_server.py")
+        return
+
+    print()
+    if skipped:
+        print("部分端口未绑定（多半是已有 mock / 真机 rosbridge 占着），其余端口继续服务。")
+    print("等待连接...\n")
 
     await asyncio.Future()  # 永久运行，直到 KeyboardInterrupt
 

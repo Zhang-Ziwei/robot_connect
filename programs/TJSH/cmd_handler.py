@@ -47,6 +47,8 @@ from programs.WRC_FLOW.WRC_FLOW import WRCFlowHandler
 from programs.AJL_anjielun.AJL import AJLHandler
 from programs.WAIC.WAIC import WAICHandler
 from programs.KAIAO.KAIAO import KAIAOHandler
+from programs.KAIAO_FLOW.KAIAO_FLOW import KAIAOFlowHandler
+from programs.CONST_FLOW.CONST_FLOW import CONSTFlowHandler
 from handlers.dispatcher_base import BaseCmdDispatcher
 from infrastructure.pose_loader import get_active_project
 
@@ -118,9 +120,11 @@ class CmdHandler(BaseCmdDispatcher):
         self._ajl  = None
         self._waic = None
         self._wrc_flow = None
+        self._const_flow = None
 
         # ── 读取激活项目，决定注册哪些命令 ───────────────────────────────
         active_project = get_active_project()
+        self.active_project = active_project
         print(f"\n📦 激活项目: {active_project}  "
               f"（修改 infrastructure/constants.py 中的 DEFAULT_ACTIVE_PROJECT 可切换，"
               f"或在 /config/robot_config.json 中添加 active_project 字段覆盖）\n")
@@ -237,9 +241,31 @@ class CmdHandler(BaseCmdDispatcher):
                 "PICK_UP_BOX":          self._kaiao.handle_pick_up_box,
                 "PUT_DOWN_BOX":         self._kaiao.handle_put_down_box,
                 "NAVIGATION":           self._kaiao.handle_navigation,
-                #"CANCEL_NAVIGATION":    self._kaiao.handle_cancel_navigation,
+                "CANCEL_NAVIGATION":    self._kaiao.handle_cancel_navigation,
             })
-    
+
+        # ── 注册 KAIAO_FLOW 命令（图形化流程编排引擎 · KAIAO 试点）──────
+        # 与 WRC_FLOW 同理：只在单独激活时注册，不参与 "ALL" 模式，
+        # 否则会和上面的 KAIAO 抢同一批 cmd_type（PICK_BOX_TO_SP 等）。
+        #
+        # 这里刻意只认 KAIAO_FLOW 一个编排入口，不再直接引用原生 KAIAO 的处理器：
+        # 哪些命令走流程图、哪些暂时转交原生实现，是 KAIAO_FLOW 自己的事
+        # （见 KAIAO_FLOW.COMMAND_FLOWS / PENDING_FLOW_COMMANDS），
+        # 命令分发这一层不必跟着变。底层能力仍复用同一个 KAIAOHandler 实例，
+        # 货架重量/持箱状态不会分裂成两份。
+        if active_project == "KAIAO_FLOW":
+            self._kaiao_flow = KAIAOFlowHandler(
+                robots=self.robots, task_state_machine=self.task_state_machine,
+            )
+            self._handler_map.update(self._kaiao_flow.build_command_map())
+
+        # CONST_FLOW：PROCESS_BEGINS / PAUSED / ENDED 由 handler 注册；
+        # 是否必须先 PROCESS_BEGINS 看 robot_config.flow_control.require_process_begins。
+        if active_project == "CONST_FLOW":
+            self._const_flow = CONSTFlowHandler(robots=self.robots)
+            self._handler_map.update(self._const_flow.build_command_map())
+
+
     def handle_pickup(self, cmd_data: Dict) -> Dict:
         """
         处理PICK_UP命令
@@ -3047,6 +3073,11 @@ class CmdHandler(BaseCmdDispatcher):
         TJSH 额外步骤（在 super() 之前）：
           - 清除 scan_enter_id_event / pick_from_opener_* 事件及其数据
         """
+        if self._const_flow is not None:
+            try:
+                self._const_flow.shutdown()
+            except Exception:
+                pass
         # TJSH 特有事件清理
         self.scan_enter_id_event.clear()
         self.pick_from_opener_500_event.clear()

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>主程序输出</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="console.css">
+</head>
+<body class="console-page">
+
+<header id="toolbar">
+  <span class="brand">🖥 主程序输出</span>
+  <a class="toolbar-link" href="./">← 返回编辑器</a>
+  <span id="zoom-box">
+    <button id="btn-zoom-out" title="缩小文字 (Ctrl + 滚轮)">−</button>
+    <span id="zoom-level">100%</span>
+    <button id="btn-zoom-in" title="放大文字 (Ctrl + 滚轮)">＋</button>
+    <button id="btn-zoom-fit" title="恢复 100%">100%</button>
+  </span>
+  <label class="chk"><input type="checkbox" id="chk-wrap"> 自动换行</label>
+  <label class="chk"><input type="checkbox" id="chk-follow" checked> 跟随最新</label>
+  <button id="btn-pause">暂停</button>
+  <button id="btn-clear" title="只清本页显示，不删日志文件">清屏</button>
+  <span id="status-text" class="status">连接中…</span>
+</header>
+
+<pre id="console-out"></pre>
+
+<script src="console.js"></script>
+</body>
+</html>

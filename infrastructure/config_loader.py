@@ -2,12 +2,14 @@
 配置文件加载模块
 支持从外部JSON配置文件加载机器人和系统配置
 
-配置文件搜索顺序（按 active_project 动态决定）：
+配置文件搜索顺序（按 active_project 动态决定，load_config 自低向高浅合并）：
   1. /config/robot_config.json          — Docker挂载目录（始终最高优先级）
   2. programs/{active_project}/robot_config.json — 单项目专属（仅 active_project != ALL）
-  3. infrastructure/robot_config.json   — 基础共享配置（ALL模式或兜底）
+  3. 试点项目的原项目配置（仅 KAIAO_FLOW ← KAIAO）— 自动充电、回调等共用段
+  4. infrastructure/robot_config.json   — 基础共享配置（ALL模式或兜底）
 
-ALL 模式（或 active_project 未配置）直接跳到第 3 步，
+高层只覆盖出现过的顶级键（如 robots），未写的段（auto_charging、navigation_map）保留下层。
+ALL 模式（或 active_project 未配置）直接跳到兜底，
 保证不同项目的机器人 IP / 端口等配置不会互相干扰。
 """
 
@@ -29,6 +31,14 @@ _PROJECT_CONFIG_DIRS: Dict[str, str] = {
     "TJSH": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "TJSH")),
     "WAIC": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "WAIC")),
     "KAIAO": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "KAIAO")),
+    "KAIAO_FLOW": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "KAIAO_FLOW")),
+    "CONST_FLOW": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "CONST_FLOW")),
+}
+
+# 图形化试点项目的配置很薄（只写 robots / 端口），共用段（自动充电、导航地图运行时
+# 配置、回调）仍在原项目文件里。合并时在试点文件之下垫一层原项目，避免那些段丢失。
+_SIBLING_PROJECT_CONFIG: Dict[str, str] = {
+    "KAIAO_FLOW": "KAIAO",
 }
 
 # 全局配置缓存
@@ -40,10 +50,11 @@ def _get_search_paths() -> List[str]:
     """
     按当前 active_project 构造配置文件搜索路径列表（动态，每次 find_config_file 时调用）。
 
-    返回顺序：
+    返回顺序（高 → 低优先级，供查找"当前文件"；load_config 会倒序浅合并）：
       1. /config/robot_config.json  — Docker外部（始终）
       2. programs/{project}/robot_config.json  — 单项目模式时
-      3. infrastructure/robot_config.json  — ALL或兜底
+      3. 试点项目对应的原项目配置（如 KAIAO_FLOW → KAIAO）
+      4. infrastructure/robot_config.json  — ALL或兜底
     """
     paths = ["/config/robot_config.json"]
 
@@ -58,6 +69,11 @@ def _get_search_paths() -> List[str]:
         if project_dir:
             project_cfg = os.path.join(project_dir, "robot_config.json")
             paths.append(project_cfg)
+        sibling = _SIBLING_PROJECT_CONFIG.get(active_project)
+        if sibling:
+            sib_dir = _PROJECT_CONFIG_DIRS.get(sibling)
+            if sib_dir:
+                paths.append(os.path.join(sib_dir, "robot_config.json"))
 
     paths.append(os.path.join(_INFRA_DIR, "robot_config.json"))
     return paths
@@ -76,39 +92,52 @@ def find_config_file() -> Optional[str]:
     return None
 
 
+def _shallow_overlay(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    """浅合并：overlay 的顶级键覆盖 base，未出现的键（如 auto_charging）保留。"""
+    merged = dict(base or {})
+    merged.update(overlay or {})
+    return merged
+
+
 def load_config(force_reload: bool = False) -> Dict[str, Any]:
     """
-    加载配置文件
-    
-    参数:
-        force_reload: 是否强制重新加载
-    
-    返回:
-        配置字典
+    加载配置文件。按优先级从低到高浅合并：
+      infrastructure（兜底） ← 原项目（试点时） ← 项目 robot_config ← /config（Docker 挂载）
+    这样 KAIAO_FLOW 只需写自己的 robots / 端口，自动充电、导航地图段不会丢。
     """
     global _config_cache, _config_path
-    
+
     if _config_cache is not None and not force_reload:
         return _config_cache
-    
-    config_path = find_config_file()
-    
-    if config_path:
+
+    merged: Dict[str, Any] = {}
+    used: List[str] = []
+    for path in reversed(_get_search_paths()):
+        if not os.path.exists(path):
+            continue
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                _config_cache = json.load(f)
-            _config_path = config_path
-            logger.info("配置加载", f"✓ 已加载外部配置文件: {config_path}")
-            print(f"✓ 已加载外部配置文件: {config_path}")
-            return _config_cache
+            with open(path, "r", encoding="utf-8") as f:
+                layer = json.load(f)
+            if not isinstance(layer, dict):
+                logger.error("配置加载", f"配置文件不是对象: {path}")
+                continue
+            merged = _shallow_overlay(merged, layer)
+            used.append(path)
         except json.JSONDecodeError as e:
-            logger.error("配置加载", f"配置文件格式错误: {config_path}, {e}")
-            print(f"⚠️  配置文件格式错误: {config_path}")
+            logger.error("配置加载", f"配置文件格式错误: {path}, {e}")
+            print(f"⚠️  配置文件格式错误: {path}")
         except Exception as e:
-            logger.error("配置加载", f"读取配置文件失败: {config_path}, {e}")
-            print(f"⚠️  读取配置文件失败: {config_path}")
-    
-    # 没找到或加载失败，返回空配置
+            logger.error("配置加载", f"读取配置文件失败: {path}, {e}")
+            print(f"⚠️  读取配置文件失败: {path}")
+
+    if used:
+        _config_cache = merged
+        _config_path = used[-1]
+        logger.info("配置加载", f"✓ 已合并配置: {' ← '.join(used)}")
+        print(f"✓ 已加载配置文件: {_config_path}" +
+              (f"（另合并 {len(used) - 1} 层兜底）" if len(used) > 1 else ""))
+        return _config_cache
+
     logger.info("配置加载", "未找到外部配置文件，使用默认配置")
     print("ℹ️  未找到外部配置文件，使用constants.py中的默认配置")
     _config_cache = {}
@@ -221,6 +250,31 @@ def get_auto_charging_config() -> Dict[str, Any]:
     return config.get("auto_charging", {})
 
 
+def get_flow_control_config() -> Dict[str, Any]:
+    """
+    图形化流程的总开关配置。
+
+    robot_config.json::
+        "flow_control": {
+            "require_process_begins": true
+        }
+
+    require_process_begins 默认 True：必须先发 PROCESS_BEGINS 才跑业务流程
+   （展会：START_WORKING 只连机器人，不会自动开跑）。
+    上位机项目另有开任务指令时，把它设为 false。
+    """
+    config = load_config() or {}
+    fc = config.get("flow_control")
+    return dict(fc) if isinstance(fc, dict) else {}
+
+
+def get_require_process_begins() -> bool:
+    fc = get_flow_control_config()
+    if "require_process_begins" not in fc:
+        return True
+    return bool(fc["require_process_begins"])
+
+
 def get_flow_api_server_config() -> Dict[str, Any]:
     """
     获取图形化流程编辑器 API 服务器配置（`network/flow_api_server.py` 用）。
@@ -230,11 +284,13 @@ def get_flow_api_server_config() -> Dict[str, Any]:
 
     返回:
         {
-            "port": int,   # 监听端口，默认 8099
+            "enabled": bool,  # 默认 True；false 则 main.py 不拉起编辑器
+            "port": int,      # 监听端口，默认 8099
         }
 
     robot_config.json 配置示例：
         "flow_api_server": {
+            "enabled": true,
             "port": 8099
         }
     """
@@ -449,6 +505,8 @@ __all__ = [
     'get_http_server_port',
     'get_auto_charging_config',
     'get_flow_api_server_config',
+    'get_flow_control_config',
+    'get_require_process_begins',
     'get_websocket_server_config',
     'get_navigation_map_config',
     'get_navigation_localization_config',

@@ -1,5 +1,5 @@
 {
-    "active_project": "WRC",
+    "active_project": "CONST_FLOW",
     "robots": {
         "robot_a": {
             "host": "127.0.0.1",
@@ -14,6 +14,13 @@
             "robot_type": "robot_b",
             "enabled": false,
             "navigation_map": "atc_map"
+        },
+        "robot_c": {
+            "host": "172.16.13.9",
+            "port": "9090",
+            "robot_type": "robot_c",
+            "enabled": true,
+            "navigation_map": "geely"
         }
     },
     "http_server": {

@@ -10,19 +10,33 @@
 
 <header id="toolbar">
   <span class="brand">🤖 流程编辑器</span>
+  <button id="btn-guide" title="交互式新手说明：从新建流程到演练、实机（新手用 Mock）">📖 使用说明</button>
 
-  <label>项目
+  <label id="tour-project">项目
     <select id="sel-project"></select>
   </label>
 
-  <label>流程
+  <label id="tour-flow">流程
     <select id="sel-flow"></select>
   </label>
 
+  <button id="btn-flow-enabled" title="打开后对应命令才会跑这份流程">○ 激活</button>
   <button id="btn-new-flow" title="新建一个空流程">＋ 新建</button>
+  <button id="btn-export" title="把流程下载到本机，软件更新后可再导入">⬇ 输出</button>
   <button id="btn-save" title="保存当前流程到服务器">💾 保存</button>
+  <span class="toolbar-sep" aria-hidden="true"></span>
   <button id="btn-validate" title="只检查流程图结构，不实际执行">✔ 校验</button>
-  <button id="btn-dryrun" class="danger" title="用 mock 机器人跑一遍，不会影响生产机器人">▶ 演练</button>
+  <button id="btn-dryrun" title="用 mock 机器人跑一遍；演练中再点一次即可取消">▶ 演练</button>
+  <button id="btn-poses" title="查看/编辑导航点位坐标">📍 点位</button>
+  <button id="btn-run-panel" class="danger" title="激活系统（START_WORKING）/ 模拟下发命令（作用于真实主程序，不是演练）">🤖 运行控制</button>
+  <button id="btn-console" title="查看 main.py 终端详细输出（可缩放）">🖥 主程序输出</button>
+
+  <span id="zoom-box">
+    <button id="btn-zoom-out" title="缩小画布 (Ctrl + 滚轮)">−</button>
+    <span id="zoom-level">100%</span>
+    <button id="btn-zoom-in" title="放大画布 (Ctrl + 滚轮)">＋</button>
+    <button id="btn-zoom-fit" title="缩放到刚好装下整张流程图">⤢ 适应</button>
+  </span>
 
   <span id="status-text" class="status"></span>
 </header>
@@ -30,18 +44,19 @@
 <div id="main">
 
   <aside id="palette">
-    <h3>节点面板</h3>
+    <h3>节点面板 <button id="btn-collapse-palette" class="collapse-btn" title="折叠面板，给画布让出空间">«</button></h3>
     <p class="hint">拖到画布上即可添加</p>
     <div id="palette-list"></div>
   </aside>
 
   <div id="canvas-wrapper">
+    <div id="canvas-sizer"></div>
     <svg id="edge-layer"></svg>
     <div id="node-layer"></div>
   </div>
 
   <aside id="inspector">
-    <h3>节点属性</h3>
+    <h3>节点属性 <button id="btn-collapse-inspector" class="collapse-btn" title="折叠面板，给画布让出空间">»</button></h3>
     <div id="inspector-body">
       <p class="hint">点击画布上的节点以编辑参数</p>
     </div>

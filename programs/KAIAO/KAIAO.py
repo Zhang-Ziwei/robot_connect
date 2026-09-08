@@ -4,7 +4,8 @@ KAIAO 任务处理器
 职责：
     - PICK_BOX_TO_SP        ：异步，box_initial_area / box_target_area 为
                               { shelf_num: [编号,row,column], shelf_type: "agv_car"|"shelf" }
-    - PICK_COMPONENT_TO_SP  ：异步，从 box_initial_area 取件，按 target 分拣至播种墙格位
+    - PICK_COMPONENT_TO_SP  ：异步，params 为任务列表（闪攀小车 box_num 0/1），
+                              按 target 分拣至播种墙格位；同时累计货架箱重量
     - PICK_UP_BOX / PUT_DOWN_BOX / NAVIGATION ：单步异步（HTTP 参数与 WAIC 相同，ROS extra_params 扩展）
 
 每个异步任务结束后通过 CallbackSender 回调外部系统。
@@ -14,6 +15,7 @@ import math
 import random
 import re
 import threading
+import time
 import uuid
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
@@ -45,6 +47,8 @@ from programs.KAIAO.constants import (
     COMPONENT_TYPES,
     KAIAO_TASK_ACTION_SPEC,
     get_nav_pose,
+    get_component_weight_kg,
+    get_heavy_box_threshold_kg,
 )
 
 logger = get_error_logger()
@@ -107,7 +111,7 @@ def _box_extra_params(
 ) -> Dict[str, Any]:
     """
     箱子抓放基础 extra_params（仅 shelf_level）。
-    same_level_movement 只在 put_down_box 时由调用方按起终点关系注入。
+    same_level_movement 只在 put_down_box / put_down_heavy_box 时由调用方按起终点关系注入。
     """
     return {"shelf_level": int(row)}
 
@@ -323,6 +327,8 @@ def _with_task_only_id(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 #: 中间点 Planning Failed 时，在原 xy 附近随机重试的半径（米）与次数
 _MID_JITTER_RADIUS_M = 0.02
 _MID_PLANNING_MAX_RETRIES = 3
+#: 拿不到当前位姿、只能直达目标时：导航下发后再等这么久发 adjust_pose
+_ADJUST_AFTER_DIRECT_NAV_S = 3.0
 
 
 def _nav_causes_blob(res, err_msg: str = "") -> str:
@@ -429,9 +435,10 @@ def _kaiao_feedback_stamp_secs(feedback) -> Optional[int]:
         return None
 
 
-def _component_pick_extra(component_type: str) -> Dict[str, Any]:
+def _component_pick_extra(component_type: str, box_num: int = 0) -> Dict[str, Any]:
     return {
-        "shelf_level": 1,
+        "shelf_level": int(box_num),
+        "box_num":     int(box_num),
         "type":        component_type,
         "number":      1,
     }
@@ -463,22 +470,113 @@ class KAIAOHandler:
         )
         # 各机器人是否手上有箱子：pick_up_box 成功后为 True，put_down_box 成功后为 False
         self._holding_box: Dict[str, bool] = {}
+        # 手上箱子累计重量（kg）；从 AGV 抓起视为 0
+        self._holding_box_weight: Dict[str, float] = {}
+        # 货架格位累计零件重量（kg），key="{shelf}_{row}_{column}"
+        self._shelf_box_weight: Dict[str, float] = {}
+        self._shelf_weight_lock = threading.Lock()
 
     def _is_holding_box(self, robot_id: str) -> bool:
         return bool(self._holding_box.get(robot_id, False))
 
-    def _set_holding_box(self, robot_id: str, holding: bool) -> None:
+    def _set_holding_box(self, robot_id: str, holding: bool, weight_kg: float = 0.0) -> None:
         prev = self._is_holding_box(robot_id)
         self._holding_box[robot_id] = bool(holding)
+        self._holding_box_weight[robot_id] = float(weight_kg) if holding else 0.0
         if prev != bool(holding):
             logger.info(
                 _LOG,
-                f"[{robot_id}] holding_box: {prev} → {bool(holding)}",
+                f"[{robot_id}] holding_box: {prev} → {bool(holding)}"
+                f" weight={self._holding_box_weight[robot_id]:.3f}kg",
             )
+
+    @staticmethod
+    def _shelf_slot_key(coords) -> str:
+        return f"{int(coords[0])}_{int(coords[1])}_{int(coords[2])}"
+
+    def _get_shelf_weight(self, coords) -> float:
+        with self._shelf_weight_lock:
+            return float(self._shelf_box_weight.get(self._shelf_slot_key(coords), 0.0))
+
+    def _add_shelf_weight(self, coords, kg: float) -> float:
+        key = self._shelf_slot_key(coords)
+        with self._shelf_weight_lock:
+            total = float(self._shelf_box_weight.get(key, 0.0)) + float(kg)
+            if total <= 0:
+                self._shelf_box_weight.pop(key, None)
+                total = 0.0
+            else:
+                self._shelf_box_weight[key] = total
+        logger.info(_LOG, f"货架格 {key} 累计重量 → {total:.3f}kg")
+        return total
+
+    def _take_shelf_weight(self, coords) -> float:
+        key = self._shelf_slot_key(coords)
+        with self._shelf_weight_lock:
+            weight = float(self._shelf_box_weight.pop(key, 0.0))
+        if weight:
+            logger.info(_LOG, f"货架格 {key} 取走箱子，带走重量 {weight:.3f}kg")
+        return weight
+
+    def _put_shelf_weight(self, coords, kg: float) -> None:
+        key = self._shelf_slot_key(coords)
+        kg = float(kg)
+        with self._shelf_weight_lock:
+            if kg <= 0:
+                self._shelf_box_weight.pop(key, None)
+            else:
+                self._shelf_box_weight[key] = kg
+        logger.info(_LOG, f"货架格 {key} 放下箱子，重量 {max(kg, 0.0):.3f}kg")
+
+    def _pick_box_task(self, pick_area: str, src_coords) -> Tuple[str, float]:
+        """
+        决定 pick_up_box / pick_up_heavy_box。
+        AGV 上车箱重量视为 0；仅 shelf→其它 才按累计零件重量判断（>= 0.8kg 用重箱）。
+        """
+        if pick_area != KAIAOArea.SHELF:
+            return KAIAOTask.PICK_UP_BOX, 0.0
+        weight = self._get_shelf_weight(src_coords)
+        threshold = get_heavy_box_threshold_kg()
+        if weight >= threshold:
+            logger.info(
+                _LOG,
+                f"货架格 {self._shelf_slot_key(src_coords)} 重量 {weight:.3f}kg "
+                f">= {threshold}kg，使用 {KAIAOTask.PICK_UP_HEAVY_BOX}",
+            )
+            return KAIAOTask.PICK_UP_HEAVY_BOX, weight
+        logger.info(
+            _LOG,
+            f"货架格 {self._shelf_slot_key(src_coords)} 重量 {weight:.3f}kg "
+            f"< {threshold}kg，使用 {KAIAOTask.PICK_UP_BOX}",
+        )
+        return KAIAOTask.PICK_UP_BOX, weight
+
+    def _put_box_task(self, pick_task: str = "", robot_id: str = "") -> str:
+        """
+        决定 put_down_box / put_down_heavy_box。
+        抓过重箱就必须用 put_down_heavy_box；否则看手上累计重量是否过阈值。
+        """
+        if pick_task == KAIAOTask.PICK_UP_HEAVY_BOX:
+            return KAIAOTask.PUT_DOWN_HEAVY_BOX
+        if robot_id:
+            held = float(self._holding_box_weight.get(robot_id, 0.0))
+            if held >= get_heavy_box_threshold_kg():
+                return KAIAOTask.PUT_DOWN_HEAVY_BOX
+        return KAIAOTask.PUT_DOWN_BOX
 
     def _get_robot(self, cmd_data: Dict) -> tuple:
         params   = cmd_data.get("params", {}) or {}
-        robot_id = params.get("robot_id") or "robot_a"
+        extra    = cmd_data.get("extra") or {}
+        if isinstance(params, list):
+            robot_id = (
+                cmd_data.get("robot_id")
+                or extra.get("robot_id")
+                or "robot_a"
+            )
+        elif isinstance(params, dict):
+            robot_id = params.get("robot_id") or extra.get("robot_id") or "robot_a"
+        else:
+            robot_id = extra.get("robot_id") or "robot_a"
         robot    = self.robots.get(robot_id)
         if robot is None:
             resp = make_error_response(
@@ -547,6 +645,7 @@ class KAIAOHandler:
         waypoints: List,
         robot_id: str,
         mode: str = 'auto',
+        odom_timeout: float = 3.0,
     ) -> "Tuple[List, str]":
         """
         根据当前机器人位置和目标终点，判断走廊导航场景并处理中间过渡点。
@@ -570,7 +669,7 @@ class KAIAOHandler:
         if not wp_cfg:
             return waypoints, 'no_change'
 
-        odom = get_robot_odom(robot, timeout=3.0)
+        odom = get_robot_odom(robot, timeout=odom_timeout)
         if not odom:
             logger.warning(_LOG, f"[{robot_id}] 无法获取当前位置，跳过中间过渡点生成")
             return waypoints, 'no_change'
@@ -694,6 +793,10 @@ class KAIAOHandler:
         mode: str = 'auto',
         waypoints: Optional[List] = None,
         mid_send: str = 'split',
+        after_leave_shelf: Optional[Callable[[], bool]] = None,
+        timeout: Optional[float] = None,
+        retry_on_disconnect: bool = True,
+        odom_timeout: Optional[float] = None,
     ) -> bool:
         """
         统一导航入口。
@@ -715,6 +818,18 @@ class KAIAOHandler:
             中间点失败策略（split）:
                 · causes 含 Planning Failed → 在原中点 0.02m 内随机抖动后重发中间点
                 · causes 含 out of tolerate（或 code=10009）→ 跳过该中间点，改发目标点
+            after_leave_shelf:
+                可选回调，在已离开取箱位的第一个中间点到达后调用（adjust_pose）。
+                若拿不到当前位姿、未插入中间点，则直达目标，导航接收 3s 后再调用。
+                返回 False 则中止本次导航。
+            timeout:
+                单次导航 Action 等待上限（秒）。默认 ``KAIAOTimeout.NAVIGATION``。
+                演练可传更短值，避免 mock 未回结果时空等到流程上限。
+            retry_on_disconnect:
+                Action 等待期间断线是否重连。演练应对未启动的 mock 立刻失败。
+            odom_timeout:
+                读里程计以生成中间点的等待上限。默认 3s；演练 mock 不发该话题，
+                可缩短以免每个导航节点空等。
         """
         if mid_send not in ('batch', 'split'):
             raise ValueError(f"mid_send 须为 'batch' 或 'split'，收到: {mid_send!r}")
@@ -731,7 +846,9 @@ class KAIAOHandler:
 
         waypoints, nav_case = self._prepend_intermediate_waypoint(
             robot, waypoints, robot_id, mode,
+            odom_timeout=3.0 if odom_timeout is None else odom_timeout,
         )
+        nav_timeout = KAIAOTimeout.NAVIGATION if timeout is None else timeout
 
         _CASE_DESC = {
             'end_to_end':  '端点→端点（先原地旋转180°）',
@@ -759,6 +876,7 @@ class KAIAOHandler:
             wps,
             attempt_label: str = "",
             skip_mid_on_feedback_secs_one: bool = False,
+            adjust_after_received_s: Optional[float] = None,
         ):
             """发送一次导航 Action。max_attempts=1：禁止底层用同一 goal（含中间点）重发。"""
             mid_feedback_skip["value"] = False
@@ -801,12 +919,37 @@ class KAIAOHandler:
                             f"{pfx} 收到 stamp.secs=1，但取消当前导航失败",
                         )
 
+            delayed_adjust = {"thread": None, "ok": True}
+            if adjust_after_received_s is not None and after_leave_shelf is not None:
+                delay_s = float(adjust_after_received_s)
+                logger.info(
+                    _LOG,
+                    f"{pfx} 直达目标已下发，{delay_s:.0f}s 后执行 adjust_pose",
+                )
+                print(f"  [KAIAO 导航]{pfx}: 无中间点，{delay_s:.0f}s 后 adjust_pose")
+
+                def _delayed_adjust():
+                    time.sleep(delay_s)
+                    logger.info(_LOG, f"{pfx} 导航接收已满 {delay_s:.0f}s，执行 adjust_pose")
+                    delayed_adjust["ok"] = bool(_run_after_leave_shelf())
+
+                delayed_adjust["thread"] = threading.Thread(
+                    target=_delayed_adjust, daemon=True, name="kaiao-delayed-adjust",
+                )
+                delayed_adjust["thread"].start()
+
             res = send_navigation_action(
                 robot, g,
                 feedback_callback=_feedback_cb,
-                timeout=KAIAOTimeout.NAVIGATION,
+                timeout=nav_timeout,
                 max_attempts=1,
+                retry_on_disconnect=retry_on_disconnect,
             )
+            adj_t = delayed_adjust["thread"]
+            if adj_t is not None and adj_t.is_alive():
+                adj_t.join(timeout=float(adjust_after_received_s) + KAIAOTimeout.ROBOT_ACTION)
+            if adj_t is not None and not delayed_adjust["ok"]:
+                return res, f"{pfx} 延迟 adjust_pose 失败"
             if res is None:
                 return None, f"{pfx} 超时或无响应"
             if res.succeeded:
@@ -897,9 +1040,18 @@ class KAIAOHandler:
 
             return "fail", last_res, last_err
 
-        def _navigate_with_retry(wps_first, wps_retry):
+        def _run_after_leave_shelf() -> bool:
+            if after_leave_shelf is None:
+                return True
+            logger.info(_LOG, f"[{robot_id}] {label} 已离开货架，执行 after_leave_shelf")
+            return bool(after_leave_shelf())
+
+        def _navigate_with_retry(wps_first, wps_retry, adjust_after_received_s=None):
             """首次用 wps_first，失败后重试用 wps_retry（仅目标）。"""
-            res, err = _send_nav(wps_first, "")
+            res, err = _send_nav(
+                wps_first, "",
+                adjust_after_received_s=adjust_after_received_s,
+            )
             if err is None:
                 return res, None
             if res is not None and res.state in _RETRYABLE:
@@ -954,6 +1106,9 @@ class KAIAOHandler:
             if status == "skip":
                 res, err = _navigate_with_retry(original_waypoints, original_waypoints)
             else:
+                # 第一步已离开取箱位（后退/平移），在此做 adjust_pose
+                if not _run_after_leave_shelf():
+                    return False
                 logger.info(_LOG, f"[{robot_id}] {label} 分步导航②：{step2_name}")
                 print(
                     f"  [KAIAO 导航][{robot_id}] 步骤2 {step2_name}: "
@@ -990,11 +1145,27 @@ class KAIAOHandler:
             if status == "skip":
                 res, err = _navigate_with_retry(original_waypoints, original_waypoints)
             else:
+                if not _run_after_leave_shelf():
+                    return False
                 logger.info(_LOG, f"[{robot_id}] {label} 分步导航 步骤2：目标点")
                 print(f"  [KAIAO 导航][{robot_id}] 步骤2 目标点 {label}")
                 res, err = _navigate_with_retry(target_wps, original_waypoints)
         else:
-            res, err = _navigate_with_retry(waypoints, original_waypoints)
+            delay = (
+                _ADJUST_AFTER_DIRECT_NAV_S
+                if after_leave_shelf is not None and nav_case == 'no_change'
+                else None
+            )
+            if delay:
+                logger.info(
+                    _LOG,
+                    f"[{robot_id}] 无当前位姿，不插中间点，直达 {label}；"
+                    f"导航接收 {delay:.0f}s 后 adjust_pose",
+                )
+            res, err = _navigate_with_retry(
+                waypoints, original_waypoints,
+                adjust_after_received_s=delay,
+            )
 
         if err:
             logger.error(_LOG, err)
@@ -1018,6 +1189,122 @@ class KAIAOHandler:
             same_lv = int(params.get("same_level_movement", 0) or 0)
             extra["same_level_movement"] = 1 if same_lv else 0
         return robot_area, extra
+
+    def _pose_xy_qw_from_area(self, area_name: str) -> Optional[Tuple[float, float, float, float]]:
+        """从配置点位取 (x, y, qz, qw)。"""
+        if not area_name:
+            return None
+        pose, _err = self._resolve_pose(area_name, "离架后退", "")
+        if not pose:
+            return None
+        p = pose[0]
+        if not isinstance(p, (list, tuple)) or len(p) < 7:
+            return None
+        return float(p[0]), float(p[1]), float(p[5]), float(p[6])
+
+    def _retreat_waypoint(self, robot, fallback_area: str = "") -> Optional[tuple]:
+        """
+        按朝向后退进入走廊，得到离架中间点。
+        优先用当前里程计；取不到时用刚抓完所在的取箱点位。
+        """
+        src_x = src_y = src_qz = src_qw = None
+        odom = get_robot_odom(robot, timeout=5.0)
+        if odom and odom.get("Position_Point_X_In") is not None:
+            src_x = float(odom["Position_Point_X_In"])
+            src_y = float(odom["Position_Point_Y_In"] or 0.0)
+            src_qz = float(odom["Orientation_Z_In"] or 0.0)
+            src_qw = (
+                float(odom["Orientation_W_In"])
+                if odom.get("Orientation_W_In") is not None else 1.0
+            )
+        else:
+            fallback = self._pose_xy_qw_from_area(fallback_area)
+            if fallback is None:
+                return None
+            src_x, src_y, src_qz, src_qw = fallback
+            logger.warning(
+                _LOG,
+                f"无里程计，使用取箱点位 {fallback_area} 计算离架中间点",
+            )
+
+        src_yaw = 2.0 * math.atan2(src_qz, src_qw)
+        wp_cfg = self._get_waypoint_config()
+        retreat = float((wp_cfg or {}).get("side_to_side_same_retreat_dx", 0.3))
+        retreat_x = src_x - math.cos(src_yaw) * retreat
+        return (retreat_x, src_y, 0.0, 0.0, 0.0, src_qz, src_qw)
+
+    def _send_adjust_pose(
+        self,
+        robot,
+        put_area: str,
+        put_shelf_level: int,
+        robot_id: str,
+        task_id: str,
+        action_type: str,
+    ) -> bool:
+        """
+        离架后在中间点做姿态修正。
+        area / shelf_level 与随后的 put_down_box 一致。
+        """
+        self.task_state_machine.update_step_label(
+            KAIAOStep.ADJUSTING_POSE,
+            f"中间点 adjust_pose area={put_area} level={put_shelf_level}",
+        )
+        extra = _with_task_only_id({"shelf_level": int(put_shelf_level)})
+        result = send_task_action(
+            robot, task=KAIAOTask.ADJUST_POSE, area=put_area,
+            extra_params=extra,
+            spec=KAIAO_TASK_ACTION_SPEC, timeout=KAIAOTimeout.ROBOT_ACTION,
+            feedback_callback=_make_task_feedback_cb("adjust_pose", robot_id),
+        )
+        if not result:
+            err = f"[{robot_id}] adjust_pose 失败: {result.error_msg}"
+            logger.error(_LOG, err)
+            self._fail_async_task(task_id, action_type, err)
+            return False
+        logger.info(_LOG, f"[{robot_id}] adjust_pose 成功 area={put_area} level={put_shelf_level}")
+        return True
+
+    def _retreat_and_adjust_pose(
+        self,
+        robot,
+        put_area: str,
+        put_shelf_level: int,
+        robot_id: str,
+        task_id: str,
+        action_type: str,
+        pick_nav: str = "",
+    ) -> bool:
+        """
+        离架后退到中间点后调用 adjust_pose。
+        主路径已并入 _navigate(after_leave_shelf=...)；本方法供 KAIAO_FLOW 复用。
+        """
+        retreat_wp = self._retreat_waypoint(robot, fallback_area=pick_nav)
+        if retreat_wp is None:
+            err = (
+                f"[{robot_id}] 离架失败：无法获取当前位置"
+                f"（无里程计且取箱点位 {pick_nav or '?'} 无效）"
+            )
+            logger.error(_LOG, err)
+            self._fail_async_task(task_id, action_type, err)
+            return False
+        self.task_state_machine.update_step_label(
+            KAIAOStep.NAVIGATING_TARGET,
+            f"离架到中间点（adjust_pose） ({retreat_wp[0]:.3f},{retreat_wp[1]:.3f})",
+        )
+        if not self._navigate(
+            robot, "", "离架中间点", robot_id, task_id,
+            mode="skip", waypoints=[retreat_wp],
+        ):
+            if self._fail_if_nav(
+                False, task_id, action_type,
+                f"[{robot_id}] 离架导航失败",
+            ):
+                return False
+            return False
+        return self._send_adjust_pose(
+            robot, put_area, put_shelf_level, robot_id, task_id, action_type,
+        )
 
     # ── 公开命令处理器 ────────────────────────────────────────────────────────
 
@@ -1075,7 +1362,7 @@ class KAIAOHandler:
         same_lv   = _same_level_movement(src, dst)
         pick_extra = dict(src["extra"])
         put_extra  = dict(dst["extra"])
-        # 仅 put_down_box 需要 same_level_movement；pick 不带该字段
+        # 仅放箱（put_down_box / put_down_heavy_box）需要 same_level_movement；pick 不带该字段
         put_extra["same_level_movement"] = same_lv
         pick_extra.pop("same_level_movement", None)
         logger.info(
@@ -1131,58 +1418,73 @@ class KAIAOHandler:
                     KAIAOStep.PICKING_UP,
                     f"抓取箱子 area={pick_area} {src['coords']}",
                 )
+                pick_task, box_weight = self._pick_box_task(pick_area, src["coords"])
+                if pick_task == KAIAOTask.PICK_UP_HEAVY_BOX and pick_area != KAIAOArea.SHELF:
+                    err = f"[{robot_id}] pick_up_heavy_box 仅允许 area=shelf，当前 area={pick_area}"
+                    logger.error(_LOG, err)
+                    self._fail_async_task(task_id, action_type, err)
+                    return
                 result = send_task_action(
-                    robot, task=KAIAOTask.PICK_UP_BOX, area=pick_area,
+                    robot, task=pick_task, area=pick_area,
                     extra_params=_with_task_only_id(pick_extra),
                     spec=KAIAO_TASK_ACTION_SPEC, timeout=KAIAOTimeout.ROBOT_ACTION,
-                    feedback_callback=_make_task_feedback_cb("pick_up_box", robot_id),
+                    feedback_callback=_make_task_feedback_cb(pick_task, robot_id),
                 )
                 # result = robot.send_service_request_task(
                 #     KAIAOService.ROBOT_TASK, task=KAIAOTask.PICK_UP_BOX,
                 #     area=pick_area, extra_params=pick_extra, maxtime=KAIAOTimeout.ROBOT_ACTION,
                 # )
                 if not result:
-                    err = f"[{robot_id}] pick_up_box 失败: {result.error_msg}"
+                    err = f"[{robot_id}] {pick_task} 失败: {result.error_msg}"
                     logger.error(_LOG, err)
                     self._fail_async_task(task_id, action_type, err)
                     return
-                logger.info(_LOG, f"[{robot_id}] pick_up_box 成功")
-                self._set_holding_box(robot_id, True)
+                logger.info(_LOG, f"[{robot_id}] {pick_task} 成功 weight={box_weight:.3f}kg")
+                if pick_area == KAIAOArea.SHELF:
+                    self._take_shelf_weight(src["coords"])
+                self._set_holding_box(robot_id, True, box_weight)
 
-                if not is_robot_at_pose(
-                    robot, get_nav_pose(put_nav),
-                    KAIAONavTolerance.DISTANCE, KAIAONavTolerance.HEADING,
-                ):
-                    self.task_state_machine.update_step_label(
-                        KAIAOStep.NAVIGATING_TARGET, f"导航到放箱位 {put_nav}"
+                put_level = int(dst["extra"].get("shelf_level", 0))
+
+                def _after_leave_pick() -> bool:
+                    return self._send_adjust_pose(
+                        robot, put_area, put_level, robot_id, task_id, action_type,
                     )
-                    if not self._navigate(robot, put_nav, put_nav, robot_id, task_id):
-                        if self._fail_if_nav(
-                            False, task_id, action_type,
-                            f"[{robot_id}] 导航到放箱位 {put_nav} 失败",
-                        ):
-                            return
+
+                # 抓完后导航到放箱位；离架后退到达中间点时发 adjust_pose（同层也会发）
+                self.task_state_machine.update_step_label(
+                    KAIAOStep.NAVIGATING_TARGET, f"导航到放箱位 {put_nav}"
+                )
+                if not self._navigate(
+                    robot, put_nav, put_nav, robot_id, task_id,
+                    after_leave_shelf=_after_leave_pick,
+                ):
+                    if self._fail_if_nav(
+                        False, task_id, action_type,
+                        f"[{robot_id}] 导航到放箱位 {put_nav} 失败",
+                    ):
+                        return
 
                 self.task_state_machine.update_step_label(
                     KAIAOStep.PUTTING_DOWN,
                     f"放置箱子 area={put_area} {dst['coords']}",
                 )
+                put_task = self._put_box_task(pick_task, robot_id)
                 result = send_task_action(
-                    robot, task=KAIAOTask.PUT_DOWN_BOX, area=put_area,
+                    robot, task=put_task, area=put_area,
                     extra_params=_with_task_only_id(put_extra),
                     spec=KAIAO_TASK_ACTION_SPEC, timeout=KAIAOTimeout.ROBOT_ACTION,
-                    feedback_callback=_make_task_feedback_cb("put_down_box", robot_id),
+                    feedback_callback=_make_task_feedback_cb(put_task, robot_id),
                 )
-                # result = robot.send_service_request_task(
-                #     KAIAOService.ROBOT_TASK, task=KAIAOTask.PUT_DOWN_BOX,
-                #     area=put_area, extra_params=put_extra, maxtime=KAIAOTimeout.ROBOT_ACTION,
-                # )
                 if not result:
-                    err = f"[{robot_id}] put_down_box 失败: {result.error_msg}"
+                    err = f"[{robot_id}] {put_task} 失败: {result.error_msg}"
                     logger.error(_LOG, err)
                     self._fail_async_task(task_id, action_type, err)
                     return
-                logger.info(_LOG, f"[{robot_id}] put_down_box 成功")
+                logger.info(_LOG, f"[{robot_id}] {put_task} 成功")
+                held = self._holding_box_weight.get(robot_id, 0.0)
+                if put_area == KAIAOArea.SHELF:
+                    self._put_shelf_weight(dst["coords"], held)
                 self._set_holding_box(robot_id, False)
 
                 self.task_state_machine.complete_task(True, summary)
@@ -1249,48 +1551,75 @@ class KAIAOHandler:
             parsed.append({"coords": coords, "component_number": comp_num})
         return parsed, None
 
+    def _parse_component_jobs(self, params) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+        """
+        解析 PICK_COMPONENT_TO_SP 的 params：
+          - 列表：每项一个取件任务（含 box_num / component_type / target）
+          - 对象：兼容旧版单任务（box_num 默认 0）
+        """
+        if isinstance(params, list):
+            raw_jobs = params
+        elif isinstance(params, dict):
+            raw_jobs = [params]
+        else:
+            return None, "params 须为对象或对象列表"
+
+        if not raw_jobs:
+            return None, "params 须为非空列表"
+
+        jobs: List[Dict[str, Any]] = []
+        for idx, raw in enumerate(raw_jobs):
+            if not isinstance(raw, dict):
+                return None, f"params[{idx}] 须为对象"
+            pick_nav = raw.get("box_initial_area") or KAIAOArea.COMPONENT_CAR
+            if not isinstance(pick_nav, str) or not pick_nav:
+                return None, f"params[{idx}].box_initial_area 须为非空字符串"
+            try:
+                box_num = int(raw.get("box_num", 0))
+            except (TypeError, ValueError):
+                return None, f"params[{idx}].box_num 须为整数 0 或 1"
+            if box_num not in (0, 1):
+                return None, f"params[{idx}].box_num 须为 0（左箱）或 1（右箱）"
+            comp_type = raw.get("component_type", "")
+            if not comp_type:
+                return None, f"params[{idx}] 缺少必要参数: component_type"
+            if comp_type not in COMPONENT_TYPES:
+                return None, (
+                    f"params[{idx}] 未知零件类型: {comp_type}，"
+                    f"可选: {', '.join(COMPONENT_TYPES)}"
+                )
+            targets, target_err = self._parse_component_targets(raw)
+            if target_err:
+                prefix = f"params[{idx}]." if isinstance(params, list) else ""
+                return None, prefix + target_err
+            jobs.append({
+                "pick_nav":  pick_nav,
+                "box_num":   box_num,
+                "comp_type": comp_type,
+                "targets":   targets,
+            })
+        return jobs, None
+
     def handle_pick_component_to_sp(self, cmd_data: Dict) -> Dict:
         """
-        PICK_COMPONENT_TO_SP —— 从 box_initial_area 抓取零件，分拣至 target 指定播种墙格位。
+        PICK_COMPONENT_TO_SP —— 从闪攀小车箱子抓取零件，分拣至播种墙格位。
 
-        params:
-            box_initial_area: 取件导航点位名（如 point1）
+        params: 对象或对象列表，每项:
+            box_initial_area: 取件导航点，目前均为 "component_car"
+            box_num:          小车前箱子位置，0=左，1=右
             component_type:   零件类型
-            target:           单个对象，或对象列表（多目的地）
-                              每项: { box_target_area: [shelf, row, column], component_number }
-                              [0]/[2]（编号 + column）→ 放件导航点 shelf{0}_{2}
-                              [1]（row）→ 放置层 shelf_level
-            targets:          可选，同 target 列表写法（兼容旧字段名）
+            target:           对象或列表，每项
+                              { box_target_area: [shelf, row, column], component_number }
+        robot_id 可放在 extra.robot_id / 顶层 robot_id / 旧版 params.robot_id。
         """
         action_type = "PICK_COMPONENT_TO_SP"
         params      = cmd_data.get("params", {}) or {}
         cmd_id      = cmd_data.get("cmd_id", "")
-        pick_nav    = params.get("box_initial_area", "")
-        comp_type   = params.get("component_type", "")
 
-        if not pick_nav or not isinstance(pick_nav, str):
+        jobs, job_err = self._parse_component_jobs(params)
+        if job_err:
             return _make_action_response(
-                False, action_type,
-                message="缺少必要参数: box_initial_area（导航点位名称）",
-                code=ErrorCode.INVALID_PARAMS,
-            )
-        if not comp_type:
-            return _make_action_response(
-                False, action_type,
-                message="缺少必要参数: component_type",
-                code=ErrorCode.INVALID_PARAMS,
-            )
-        if comp_type not in COMPONENT_TYPES:
-            return _make_action_response(
-                False, action_type,
-                message=f"未知零件类型: {comp_type}，可选: {', '.join(COMPONENT_TYPES)}",
-                code=ErrorCode.INVALID_PARAMS,
-            )
-
-        targets, target_err = self._parse_component_targets(params)
-        if target_err:
-            return _make_action_response(
-                False, action_type, message=target_err, code=ErrorCode.INVALID_PARAMS,
+                False, action_type, message=job_err, code=ErrorCode.INVALID_PARAMS,
             )
 
         robot_id, robot, err_resp = self._get_robot(cmd_data)
@@ -1305,135 +1634,136 @@ class KAIAOHandler:
         if self.task_state_machine.is_busy():
             return self._busy_response(action_type, robot_id)
 
-        total_num = sum(t["component_number"] for t in targets)
+        total_num = sum(
+            t["component_number"] for job in jobs for t in job["targets"]
+        )
+        summary_parts = [
+            f"{job['comp_type']}x{sum(t['component_number'] for t in job['targets'])}"
+            f"(box{job['box_num']})"
+            for job in jobs
+        ]
+        summary = ", ".join(summary_parts)
 
         self.task_state_machine.start_task(task_id, robot_id)
 
         def _run():
-            summary = f"{comp_type} x{total_num} from {pick_nav}"
             piece_idx = 0
             try:
-                # 导航到取件位
-                if not is_robot_at_pose(
-                    robot, get_nav_pose(pick_nav),
-                    KAIAONavTolerance.DISTANCE, KAIAONavTolerance.HEADING,
-                ):
-                    self.task_state_machine.update_step_label(
-                        KAIAOStep.NAVIGATING, f"导航到取件位 {pick_nav}"
-                    )
-                    if not self._navigate(robot, pick_nav, pick_nav, robot_id, task_id):
-                        if self._fail_if_nav(
-                            False, task_id, action_type,
-                            f"[{robot_id}] 导航到取件位 {pick_nav} 失败",
-                        ):
-                            return
+                for job in jobs:
+                    pick_nav  = job["pick_nav"]
+                    box_num   = job["box_num"]
+                    comp_type = job["comp_type"]
+                    unit_kg   = get_component_weight_kg(comp_type)
 
-                for dest in targets:
-                    dest_coords = dest["coords"]
-                    dest_num    = dest["component_number"]
-                    shelf_no, put_level, put_col = dest_coords
-                    put_nav = _shelf_nav_area(shelf_no, put_col)
-
-                    for i in range(dest_num):
-                        piece_idx += 1
-                        step = f"[{piece_idx}/{total_num}]"
-
-                        # 抓取零件
+                    if not is_robot_at_pose(
+                        robot, get_nav_pose(pick_nav),
+                        KAIAONavTolerance.DISTANCE, KAIAONavTolerance.HEADING,
+                    ):
                         self.task_state_machine.update_step_label(
-                            KAIAOStep.PICKING_COMPONENT,
-                            f"抓取零件 {comp_type} {step}",
+                            KAIAOStep.NAVIGATING, f"导航到取件位 {pick_nav} box_num={box_num}"
                         )
-                        '''result = send_task_action(
-                            robot, task=KAIAOTask.PICK_UP_COMPONENT, area=KAIAOArea.COMPONENT_CAR,
-                            extra_params=_component_pick_extra(comp_type),
-                            spec=KAIAO_TASK_ACTION_SPEC, timeout=KAIAOTimeout.ROBOT_ACTION,
-                            feedback_callback=_make_task_feedback_cb(
-                                f"pick_up_component{step}", robot_id),
-                        )'''
-                        result = robot.send_service_request_task(
-                            KAIAOService.ROBOT_TASK, task=KAIAOTask.PICK_UP_COMPONENT,
-                            area=KAIAOArea.COMPONENT_CAR,
-                            extra_params=_with_task_only_id(
-                                _component_pick_extra(comp_type)
-                            ),
-                            maxtime=KAIAOTimeout.ROBOT_ACTION,
-                        )
-                        if not result:
-                            err = f"[{robot_id}] pick_up_component{step} 失败: {result.error_msg}"
-                            logger.error(_LOG, err)
-                            self._fail_async_task(task_id, action_type, err)
-                            return
-                        logger.info(_LOG, f"[{robot_id}] pick_up_component{step} 成功")
+                        if not self._navigate(robot, pick_nav, pick_nav, robot_id, task_id):
+                            if self._fail_if_nav(
+                                False, task_id, action_type,
+                                f"[{robot_id}] 导航到取件位 {pick_nav} 失败",
+                            ):
+                                return
 
-                        # 导航到放件位（由 box_target_area[0]/[2] 推导，如 shelf0_0）
-                        if not is_robot_at_pose(
-                            robot, get_nav_pose(put_nav),
-                            KAIAONavTolerance.DISTANCE, KAIAONavTolerance.HEADING,
-                        ):
+                    for dest in job["targets"]:
+                        dest_coords = dest["coords"]
+                        dest_num    = dest["component_number"]
+                        shelf_no, put_level, put_col = dest_coords
+                        put_nav = _shelf_nav_area(shelf_no, put_col)
+
+                        for _i in range(dest_num):
+                            piece_idx += 1
+                            step = f"[{piece_idx}/{total_num}]"
+
                             self.task_state_machine.update_step_label(
-                                KAIAOStep.NAVIGATING_TARGET,
-                                f"导航到放件位 {put_nav} {step}",
+                                KAIAOStep.PICKING_COMPONENT,
+                                f"抓取零件 {comp_type} box_num={box_num} {step}",
                             )
-                            if not self._navigate(robot, put_nav, put_nav, robot_id, task_id):
-                                if self._fail_if_nav(
-                                    False, task_id, action_type,
-                                    f"[{robot_id}] 导航到放件位 {put_nav} 失败",
-                                ):
-                                    return
+                            result = robot.send_service_request_task(
+                                KAIAOService.ROBOT_TASK, task=KAIAOTask.PICK_UP_COMPONENT,
+                                area=KAIAOArea.COMPONENT_CAR,
+                                extra_params=_with_task_only_id(
+                                    _component_pick_extra(comp_type, box_num)
+                                ),
+                                maxtime=KAIAOTimeout.ROBOT_ACTION,
+                            )
+                            if not result:
+                                err = (
+                                    f"[{robot_id}] pick_up_component{step} 失败: "
+                                    f"{result.error_msg}"
+                                )
+                                logger.error(_LOG, err)
+                                self._fail_async_task(task_id, action_type, err)
+                                return
+                            logger.info(_LOG, f"[{robot_id}] pick_up_component{step} 成功")
 
-                        # 放置零件：area=放件导航点；shelf_level=box_target_area[1]（row）
-                        self.task_state_machine.update_step_label(
-                            KAIAOStep.PUTTING_COMPONENT,
-                            f"放置零件至 {put_nav} level={put_level} {step}",
-                        )
-                        '''result = send_task_action(
-                            robot, task=KAIAOTask.PUT_DOWN_COMPONENT, area=put_nav,
-                            extra_params=_component_put_extra(put_level, comp_type),
-                            spec=KAIAO_TASK_ACTION_SPEC, timeout=KAIAOTimeout.ROBOT_ACTION,
-                            feedback_callback=_make_task_feedback_cb(
-                                f"put_down_component{step}", robot_id),
-                        )'''
-                        result = robot.send_service_request_task(
-                            KAIAOService.ROBOT_TASK, task=KAIAOTask.PUT_DOWN_COMPONENT,
-                            area=put_nav,
-                            extra_params=_with_task_only_id(
-                                _component_put_extra(put_level, comp_type)
-                            ),
-                            maxtime=KAIAOTimeout.ROBOT_ACTION,
-                        )
-                        if not result:
-                            err = f"[{robot_id}] put_down_component{step} 失败: {result.error_msg}"
-                            logger.error(_LOG, err)
-                            self._fail_async_task(task_id, action_type, err)
-                            return
-                        logger.info(_LOG, f"[{robot_id}] put_down_component{step} 成功")
-
-                        if piece_idx < total_num:
                             if not is_robot_at_pose(
-                                robot, get_nav_pose(pick_nav),
+                                robot, get_nav_pose(put_nav),
                                 KAIAONavTolerance.DISTANCE, KAIAONavTolerance.HEADING,
                             ):
                                 self.task_state_machine.update_step_label(
-                                    KAIAOStep.NAVIGATING,
-                                    f"返回取件位 {pick_nav} {step}",
+                                    KAIAOStep.NAVIGATING_TARGET,
+                                    f"导航到放件位 {put_nav} {step}",
                                 )
-                                if not self._navigate(robot, pick_nav, pick_nav, robot_id, task_id):
+                                if not self._navigate(robot, put_nav, put_nav, robot_id, task_id):
                                     if self._fail_if_nav(
                                         False, task_id, action_type,
-                                        f"[{robot_id}] 返回取件位 {pick_nav} 失败",
+                                        f"[{robot_id}] 导航到放件位 {put_nav} 失败",
                                     ):
                                         return
-                        else:
-                            # 导航到回家位
-                            if not is_robot_at_pose(
-                                robot, get_nav_pose("home"),
-                                KAIAONavTolerance.DISTANCE, KAIAONavTolerance.HEADING,
-                            ):
-                                self.task_state_machine.update_step_label(
-                                    KAIAOStep.NAVIGATING, f"导航到回家位 home"
+
+                            self.task_state_machine.update_step_label(
+                                KAIAOStep.PUTTING_COMPONENT,
+                                f"放置零件至 {put_nav} level={put_level} {step}",
+                            )
+                            result = robot.send_service_request_task(
+                                KAIAOService.ROBOT_TASK, task=KAIAOTask.PUT_DOWN_COMPONENT,
+                                area=put_nav,
+                                extra_params=_with_task_only_id(
+                                    _component_put_extra(put_level, comp_type)
+                                ),
+                                maxtime=KAIAOTimeout.ROBOT_ACTION,
+                            )
+                            if not result:
+                                err = (
+                                    f"[{robot_id}] put_down_component{step} 失败: "
+                                    f"{result.error_msg}"
                                 )
-                                '''if not self._navigate(robot, "home", "home", robot_id, task_id):
-                                    return'''
+                                logger.error(_LOG, err)
+                                self._fail_async_task(task_id, action_type, err)
+                                return
+                            logger.info(_LOG, f"[{robot_id}] put_down_component{step} 成功")
+                            self._add_shelf_weight(dest_coords, unit_kg)
+
+                            if piece_idx < total_num:
+                                if not is_robot_at_pose(
+                                    robot, get_nav_pose(pick_nav),
+                                    KAIAONavTolerance.DISTANCE, KAIAONavTolerance.HEADING,
+                                ):
+                                    self.task_state_machine.update_step_label(
+                                        KAIAOStep.NAVIGATING,
+                                        f"返回取件位 {pick_nav} {step}",
+                                    )
+                                    if not self._navigate(
+                                        robot, pick_nav, pick_nav, robot_id, task_id,
+                                    ):
+                                        if self._fail_if_nav(
+                                            False, task_id, action_type,
+                                            f"[{robot_id}] 返回取件位 {pick_nav} 失败",
+                                        ):
+                                            return
+                            else:
+                                if not is_robot_at_pose(
+                                    robot, get_nav_pose("home"),
+                                    KAIAONavTolerance.DISTANCE, KAIAONavTolerance.HEADING,
+                                ):
+                                    self.task_state_machine.update_step_label(
+                                        KAIAOStep.NAVIGATING, "导航到回家位 home"
+                                    )
 
                 self.task_state_machine.complete_task(True, summary)
                 self.callback_sender.send(
@@ -1454,7 +1784,9 @@ class KAIAOHandler:
             target=_run, daemon=True, name=f"kaiao-pick-comp-{robot_id}"
         ).start()
 
-        return _make_action_response(True, action_type, message=f"动作 {action_type} 已受理，后台执行中")
+        return _make_action_response(
+            True, action_type, message=f"动作 {action_type} 已受理，后台执行中",
+        )
 
     def handle_pick_up_box(self, cmd_data: Dict) -> Dict:
         """PICK_UP_BOX —— 导航到 area 后抓箱（HTTP 参数同 WAIC，ROS 带 shelf_level）。"""
@@ -1555,24 +1887,21 @@ class KAIAOHandler:
                 self.task_state_machine.update_step_label(
                     KAIAOStep.PUTTING_DOWN, f"放置箱子（{area}）"
                 )
+                put_task = self._put_box_task(robot_id=robot_id)
                 result = send_task_action(
-                    robot, task=KAIAOTask.PUT_DOWN_BOX, area=robot_area,
+                    robot, task=put_task, area=robot_area,
                     extra_params=_with_task_only_id(extra),
                     spec=KAIAO_TASK_ACTION_SPEC, timeout=KAIAOTimeout.ROBOT_ACTION,
-                    feedback_callback=_make_task_feedback_cb("put_down_box", robot_id),
+                    feedback_callback=_make_task_feedback_cb(put_task, robot_id),
                 )
-                # result = robot.send_service_request_task(
-                #     KAIAOService.ROBOT_TASK, task=KAIAOTask.PUT_DOWN_BOX,
-                #     area=robot_area, extra_params=extra, maxtime=KAIAOTimeout.ROBOT_ACTION,
-                # )
                 if not result:
-                    err = f"[{robot_id}] put_down_box 失败: {result.error_msg}"
+                    err = f"[{robot_id}] {put_task} 失败: {result.error_msg}"
                     logger.error(_LOG, err)
                     self._fail_async_task(task_id, action_type, err)
                     return
-                logger.info(_LOG, f"[{robot_id}] put_down_box 成功")
+                logger.info(_LOG, f"[{robot_id}] {put_task} 成功")
                 self._set_holding_box(robot_id, False)
-                self.task_state_machine.complete_task(True, f"put_down_box @ {area}")
+                self.task_state_machine.complete_task(True, f"{put_task} @ {area}")
                 self.callback_sender.send(
                     cmd_id=task_id, cmd_type=action_type, success=True,
                     message=f"放置完成: {area}",
@@ -1648,3 +1977,23 @@ class KAIAOHandler:
             target=_run, daemon=True, name=f"kaiao-nav-{robot_id}"
         ).start()
         return _make_action_response(True, action_type, message=f"动作 {action_type} 已受理，后台执行中")
+
+    def handle_cancel_navigation(self, cmd_data: Dict) -> Dict:
+        """CANCEL_NAVIGATION —— 取消当前导航 Action。忙碌时也允许，用来打断正在走的导航。"""
+        action_type = "CANCEL_NAVIGATION"
+        robot_id, robot, err_resp = self._get_robot(cmd_data)
+        if err_resp:
+            return _make_action_response(
+                False, action_type,
+                message=err_resp.get("message", "机器人不存在"),
+                code=ErrorCode.ROBOT_NOT_FOUND,
+            )
+        params = cmd_data.get("params") or {}
+        goal_id = params.get("goal_id") or ""
+        ok = cancel_navigation_action(robot, goal_id=goal_id)
+        if ok:
+            return _make_action_response(
+                True, action_type,
+                message="已发送导航取消" + (f"（goal_id={goal_id}）" if goal_id else "（全部在途 goal）"),
+            )
+        return _make_action_response(False, action_type, message="导航取消发送失败")

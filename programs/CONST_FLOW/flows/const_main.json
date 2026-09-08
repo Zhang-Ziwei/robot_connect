@@ -1,0 +1,657 @@
+{
+  "start": "n_mqtt",
+  "enabled": true,
+  "nodes": [
+    {
+      "id": "n_mqtt",
+      "type": "const_mqtt_connect",
+      "label": "连接MQTT并发现检定系统",
+      "params": {},
+      "x": 80,
+      "y": 80
+    },
+    {
+      "id": "n_mqtt_delay",
+      "type": "delay",
+      "label": "MQTT重连等待",
+      "params": {
+        "seconds": 3
+      },
+      "x": 80,
+      "y": 240
+    },
+    {
+      "id": "n_bind",
+      "type": "const_wait_calsys",
+      "label": "等待检定系统绑定本机",
+      "params": {
+        "want": "bound",
+        "timeout": 0
+      },
+      "x": 360,
+      "y": 80
+    },
+    {
+      "id": "n_status",
+      "type": "const_set_live",
+      "label": "上报待机",
+      "params": {
+        "status": "待机"
+      },
+      "x": 640,
+      "y": 80
+    },
+    {
+      "id": "n_nav_in",
+      "type": "navigate",
+      "label": "导航到来料货架",
+      "params": {
+        "robot_id": "robot_a",
+        "pose": "inbound_shelf",
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 920,
+      "y": 80
+    },
+    {
+      "id": "n_plc",
+      "type": "const_plc_ready",
+      "label": "检查PLC就绪",
+      "params": {},
+      "x": 1200,
+      "y": 80
+    },
+    {
+      "id": "n_plc_delay",
+      "type": "delay",
+      "label": "PLC未就绪等待",
+      "params": {
+        "seconds": 5
+      },
+      "x": 1200,
+      "y": 240
+    },
+    {
+      "id": "n_pick",
+      "type": "send_operation",
+      "label": "搬箱子",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "robot_id": "robot_a",
+        "task": "pick_up_box",
+        "area": "inbound_shelf",
+        "timeout": 1200
+      },
+      "x": 1480,
+      "y": 80
+    },
+    {
+      "id": "n_parse",
+      "type": "const_parse_box",
+      "label": "解析是否有箱/表数量",
+      "params": {},
+      "x": 1760,
+      "y": 80
+    },
+    {
+      "id": "n_has_box",
+      "type": "condition",
+      "label": "箱子里有表?",
+      "params": {
+        "var": "has_box",
+        "op": "truthy",
+        "value": ""
+      },
+      "x": 2040,
+      "y": 80
+    },
+    {
+      "id": "n_pick_delay",
+      "type": "delay",
+      "label": "无箱，过几秒再搬",
+      "params": {
+        "seconds": 5
+      },
+      "x": 1760,
+      "y": 240
+    },
+    {
+      "id": "n_wait_idle",
+      "type": "const_wait_calsys",
+      "label": "等待检定系统空闲",
+      "params": {
+        "want": "idle",
+        "timeout": 0
+      },
+      "x": 80,
+      "y": 420
+    },
+    {
+      "id": "n_pick_st",
+      "type": "const_pick_station",
+      "label": "选待装表工位",
+      "params": {},
+      "x": 360,
+      "y": 420
+    },
+    {
+      "id": "n_install",
+      "type": "const_install_station",
+      "label": "装表并等识别/检漏",
+      "params": {
+        "station_seq": "{{station_seq}}",
+        "station_pose": "{{station_pose}}",
+        "timeout": 1200
+      },
+      "x": 640,
+      "y": 420
+    },
+    {
+      "id": "n_has_inst",
+      "type": "condition",
+      "label": "本轮已装上工位?",
+      "params": {
+        "var": "installed_stations",
+        "op": "truthy",
+        "value": ""
+      },
+      "x": 360,
+      "y": 600
+    },
+    {
+      "id": "n_remain_wait",
+      "type": "condition",
+      "label": "还有表没放?",
+      "params": {
+        "var": "remaining",
+        "op": ">",
+        "value": 0
+      },
+      "x": 640,
+      "y": 600
+    },
+    {
+      "id": "n_st_delay",
+      "type": "delay",
+      "label": "等工位空出来",
+      "params": {
+        "seconds": 5
+      },
+      "x": 920,
+      "y": 600
+    },
+    {
+      "id": "n_start",
+      "type": "const_mqtt_start",
+      "label": "请求启动检定",
+      "params": {},
+      "x": 920,
+      "y": 420
+    },
+    {
+      "id": "n_wait_end",
+      "type": "const_wait_end",
+      "label": "等待检定结束通知",
+      "params": {
+        "timeout": 0
+      },
+      "x": 1200,
+      "y": 420
+    },
+    {
+      "id": "n_leak",
+      "type": "condition",
+      "label": "发生泄漏?",
+      "params": {
+        "var": "end_is_leak",
+        "op": "truthy",
+        "value": ""
+      },
+      "x": 1480,
+      "y": 420
+    },
+    {
+      "id": "n_reinstall",
+      "type": "const_reinstall_all",
+      "label": "全部工位重装",
+      "params": {
+        "timeout": 1200
+      },
+      "x": 1480,
+      "y": 600
+    },
+    {
+      "id": "n_normal",
+      "type": "condition",
+      "label": "正常结束?",
+      "params": {
+        "var": "end_is_normal",
+        "op": "truthy",
+        "value": ""
+      },
+      "x": 1760,
+      "y": 420
+    },
+    {
+      "id": "n_pending",
+      "type": "const_wait_calsys",
+      "label": "等待人工确认结束",
+      "params": {
+        "want": "pending_clear",
+        "timeout": 0
+      },
+      "x": 1760,
+      "y": 600
+    },
+    {
+      "id": "n_uninst",
+      "type": "const_uninstall_all",
+      "label": "按合格/不合格拆表",
+      "params": {
+        "timeout": 1200
+      },
+      "x": 2040,
+      "y": 420
+    },
+    {
+      "id": "n_more",
+      "type": "condition",
+      "label": "箱内还有未放的表?",
+      "params": {
+        "var": "remaining",
+        "op": ">",
+        "value": 0
+      },
+      "x": 2320,
+      "y": 420
+    },
+    {
+      "id": "n_nav_out",
+      "type": "navigate",
+      "label": "导航到下料货架",
+      "params": {
+        "robot_id": "robot_a",
+        "pose": "outbound_shelf",
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 80,
+      "y": 780
+    },
+    {
+      "id": "n_put",
+      "type": "send_operation",
+      "label": "放下后部箱子",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "robot_id": "robot_a",
+        "task": "put_down_box",
+        "area": "outbound_shelf",
+        "timeout": 1200
+      },
+      "x": 360,
+      "y": 780
+    },
+    {
+      "id": "n_nav_wait",
+      "type": "navigate",
+      "label": "去搬箱等待区",
+      "params": {
+        "robot_id": "robot_a",
+        "pose": "box_wait",
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 640,
+      "y": 780
+    },
+    {
+      "id": "n_free",
+      "type": "const_stations_all_free",
+      "label": "全部工位待装表?",
+      "params": {},
+      "x": 920,
+      "y": 780
+    },
+    {
+      "id": "n_free_delay",
+      "type": "delay",
+      "label": "工位未全部空闲",
+      "params": {
+        "seconds": 5
+      },
+      "x": 920,
+      "y": 960
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "n_mqtt",
+      "target": "n_bind",
+      "when": "success"
+    },
+    {
+      "id": "e2",
+      "source": "n_mqtt",
+      "target": "n_mqtt_delay",
+      "when": "failure"
+    },
+    {
+      "id": "e3",
+      "source": "n_mqtt_delay",
+      "target": "n_mqtt",
+      "when": "default"
+    },
+    {
+      "id": "e4",
+      "source": "n_bind",
+      "target": "n_status",
+      "when": "success"
+    },
+    {
+      "id": "e4b",
+      "source": "n_bind",
+      "target": "n_mqtt_delay",
+      "when": "failure"
+    },
+    {
+      "id": "e5",
+      "source": "n_status",
+      "target": "n_nav_in",
+      "when": "default"
+    },
+    {
+      "id": "e6",
+      "source": "n_nav_in",
+      "target": "n_plc",
+      "when": "success"
+    },
+    {
+      "id": "e6b",
+      "source": "n_nav_in",
+      "target": "n_status",
+      "when": "failure"
+    },
+    {
+      "id": "e7",
+      "source": "n_plc",
+      "target": "n_pick",
+      "when": "success"
+    },
+    {
+      "id": "e8",
+      "source": "n_plc",
+      "target": "n_plc_delay",
+      "when": "failure"
+    },
+    {
+      "id": "e9",
+      "source": "n_plc_delay",
+      "target": "n_plc",
+      "when": "default"
+    },
+    {
+      "id": "e10",
+      "source": "n_pick",
+      "target": "n_parse",
+      "when": "success"
+    },
+    {
+      "id": "e11",
+      "source": "n_pick",
+      "target": "n_pick_delay",
+      "when": "failure"
+    },
+    {
+      "id": "e12",
+      "source": "n_parse",
+      "target": "n_has_box",
+      "when": "default"
+    },
+    {
+      "id": "e13",
+      "source": "n_has_box",
+      "target": "n_wait_idle",
+      "when": "true"
+    },
+    {
+      "id": "e14",
+      "source": "n_has_box",
+      "target": "n_pick_delay",
+      "when": "false"
+    },
+    {
+      "id": "e15",
+      "source": "n_pick_delay",
+      "target": "n_pick",
+      "when": "default"
+    },
+    {
+      "id": "e16",
+      "source": "n_wait_idle",
+      "target": "n_pick_st",
+      "when": "success"
+    },
+    {
+      "id": "e16b",
+      "source": "n_wait_idle",
+      "target": "n_st_delay",
+      "when": "failure"
+    },
+    {
+      "id": "e17",
+      "source": "n_pick_st",
+      "target": "n_install",
+      "when": "success"
+    },
+    {
+      "id": "e18",
+      "source": "n_pick_st",
+      "target": "n_has_inst",
+      "when": "failure"
+    },
+    {
+      "id": "e19",
+      "source": "n_install",
+      "target": "n_pick_st",
+      "when": "success"
+    },
+    {
+      "id": "e20",
+      "source": "n_install",
+      "target": "n_has_inst",
+      "when": "failure"
+    },
+    {
+      "id": "e21",
+      "source": "n_has_inst",
+      "target": "n_start",
+      "when": "true"
+    },
+    {
+      "id": "e22",
+      "source": "n_has_inst",
+      "target": "n_remain_wait",
+      "when": "false"
+    },
+    {
+      "id": "e23",
+      "source": "n_remain_wait",
+      "target": "n_st_delay",
+      "when": "true"
+    },
+    {
+      "id": "e24",
+      "source": "n_remain_wait",
+      "target": "n_nav_out",
+      "when": "false"
+    },
+    {
+      "id": "e25",
+      "source": "n_st_delay",
+      "target": "n_wait_idle",
+      "when": "default"
+    },
+    {
+      "id": "e26",
+      "source": "n_start",
+      "target": "n_wait_end",
+      "when": "success"
+    },
+    {
+      "id": "e26b",
+      "source": "n_start",
+      "target": "n_pending",
+      "when": "failure"
+    },
+    {
+      "id": "e27",
+      "source": "n_wait_end",
+      "target": "n_leak",
+      "when": "success"
+    },
+    {
+      "id": "e27b",
+      "source": "n_wait_end",
+      "target": "n_start",
+      "when": "failure"
+    },
+    {
+      "id": "e28",
+      "source": "n_leak",
+      "target": "n_reinstall",
+      "when": "true"
+    },
+    {
+      "id": "e29",
+      "source": "n_leak",
+      "target": "n_normal",
+      "when": "false"
+    },
+    {
+      "id": "e30",
+      "source": "n_reinstall",
+      "target": "n_start",
+      "when": "success"
+    },
+    {
+      "id": "e30b",
+      "source": "n_reinstall",
+      "target": "n_pending",
+      "when": "failure"
+    },
+    {
+      "id": "e31",
+      "source": "n_normal",
+      "target": "n_uninst",
+      "when": "true"
+    },
+    {
+      "id": "e32",
+      "source": "n_normal",
+      "target": "n_pending",
+      "when": "false"
+    },
+    {
+      "id": "e33",
+      "source": "n_pending",
+      "target": "n_start",
+      "when": "success"
+    },
+    {
+      "id": "e33b",
+      "source": "n_pending",
+      "target": "n_pending",
+      "when": "failure"
+    },
+    {
+      "id": "e34",
+      "source": "n_uninst",
+      "target": "n_more",
+      "when": "success"
+    },
+    {
+      "id": "e34b",
+      "source": "n_uninst",
+      "target": "n_more",
+      "when": "failure"
+    },
+    {
+      "id": "e35",
+      "source": "n_more",
+      "target": "n_wait_idle",
+      "when": "true"
+    },
+    {
+      "id": "e36",
+      "source": "n_more",
+      "target": "n_nav_out",
+      "when": "false"
+    },
+    {
+      "id": "e37",
+      "source": "n_nav_out",
+      "target": "n_put",
+      "when": "success"
+    },
+    {
+      "id": "e37b",
+      "source": "n_nav_out",
+      "target": "n_put",
+      "when": "failure"
+    },
+    {
+      "id": "e38",
+      "source": "n_put",
+      "target": "n_nav_wait",
+      "when": "success"
+    },
+    {
+      "id": "e38b",
+      "source": "n_put",
+      "target": "n_nav_wait",
+      "when": "failure"
+    },
+    {
+      "id": "e39",
+      "source": "n_nav_wait",
+      "target": "n_free",
+      "when": "success"
+    },
+    {
+      "id": "e39b",
+      "source": "n_nav_wait",
+      "target": "n_free",
+      "when": "failure"
+    },
+    {
+      "id": "e40",
+      "source": "n_free",
+      "target": "n_nav_in",
+      "when": "success"
+    },
+    {
+      "id": "e41",
+      "source": "n_free",
+      "target": "n_free_delay",
+      "when": "failure"
+    },
+    {
+      "id": "e42",
+      "source": "n_free_delay",
+      "target": "n_free",
+      "when": "default"
+    }
+  ],
+  "context_vars": {
+    "robot_id": "robot_a",
+    "remaining": 0,
+    "has_box": false,
+    "installed_stations": [],
+    "placed_this_round": 0
+  }
+}

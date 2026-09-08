@@ -1,0 +1,45 @@
+.console-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.console-page .toolbar-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.console-page .toolbar-link:hover { text-decoration: underline; }
+
+.console-page .chk {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+#console-out {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 12px 16px;
+  overflow: auto;
+  background: #14151a;
+  color: #d7dbc8;
+  font-family: ui-monospace, "Cascadia Code", "Sarasa Mono SC", "Microsoft YaHei", monospace;
+  font-size: calc(13px * var(--console-zoom, 1));
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+}
+
+#console-out.wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+#console-out .empty-hint {
+  color: var(--text-dim);
+}

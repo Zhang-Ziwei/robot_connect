@@ -1,0 +1,375 @@
+{
+  "start": "wait_for_command_1",
+  "enabled": true,
+  "nodes": [
+    {
+      "id": "c_destack",
+      "type": "send_operation",
+      "label": "robot_c拆垛 pick_box_to_sp",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "pick_box_to_sp",
+        "area": "",
+        "robot_id": "robot_c",
+        "timeout": 1200
+      },
+      "x": 220,
+      "y": 76
+    },
+    {
+      "id": "c_destack_delay",
+      "type": "delay",
+      "label": "拆垛失败，稍后重试",
+      "params": {
+        "seconds": 5
+      },
+      "x": 100,
+      "y": 281
+    },
+    {
+      "id": "a_nav_p1",
+      "type": "navigate",
+      "label": "robot_a导航到P1",
+      "params": {
+        "robot_id": "robot_a",
+        "pose": "P1",
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 458,
+      "y": 86
+    },
+    {
+      "id": "a_pick_a",
+      "type": "send_operation",
+      "label": "抓取零件A(P1)",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "pick_up_component_A",
+        "area": "P1",
+        "robot_id": "robot_a",
+        "timeout": 1200
+      },
+      "x": 640,
+      "y": 80
+    },
+    {
+      "id": "a_abort_a",
+      "type": "abort_flow",
+      "label": "抓零件A失败，结束",
+      "params": {
+        "message": "pick_up_component_A 失败"
+      },
+      "x": 640,
+      "y": 240
+    },
+    {
+      "id": "a_nav_p31_a",
+      "type": "navigate",
+      "label": "导航到P3_1放零件A",
+      "params": {
+        "robot_id": "robot_a",
+        "pose": "P3_1",
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 920,
+      "y": 80
+    },
+    {
+      "id": "a_put_a",
+      "type": "send_operation",
+      "label": "放下零件A(P3_1)",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "put_down_component_A",
+        "area": "P3_1",
+        "robot_id": "robot_a",
+        "timeout": 1200
+      },
+      "x": 1200,
+      "y": 80
+    },
+    {
+      "id": "a_nav_p2",
+      "type": "navigate",
+      "label": "导航到P2",
+      "params": {
+        "robot_id": "robot_a",
+        "pose": "P2",
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 80,
+      "y": 400
+    },
+    {
+      "id": "a_pick_b",
+      "type": "send_operation",
+      "label": "抓取零件B(P2)",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "pick_up_component_B",
+        "area": "P2",
+        "robot_id": "robot_a",
+        "timeout": 1200
+      },
+      "x": 360,
+      "y": 400
+    },
+    {
+      "id": "a_abort_b",
+      "type": "abort_flow",
+      "label": "抓零件B失败，结束",
+      "params": {
+        "message": "pick_up_component_B 失败"
+      },
+      "x": 360,
+      "y": 560
+    },
+    {
+      "id": "a_nav_p31_b",
+      "type": "navigate",
+      "label": "导航到P3_1放零件B",
+      "params": {
+        "robot_id": "robot_a",
+        "pose": "P3_1",
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 640,
+      "y": 400
+    },
+    {
+      "id": "a_put_b",
+      "type": "send_operation",
+      "label": "放下零件B(P3_1)",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "put_down_component_B",
+        "area": "P3_1",
+        "robot_id": "robot_a",
+        "timeout": 1200
+      },
+      "x": 920,
+      "y": 400
+    },
+    {
+      "id": "a_pick_box",
+      "type": "send_operation",
+      "label": "搬起P3_1满箱",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task_geely",
+        "task": "pick_up_box",
+        "area": "P3_1",
+        "robot_id": "robot_a",
+        "timeout": 1200
+      },
+      "x": 80,
+      "y": 720
+    },
+    {
+      "id": "a_nav_p4",
+      "type": "navigate",
+      "label": "导航到P4",
+      "params": {
+        "robot_id": "robot_a",
+        "pose": "P4",
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 360,
+      "y": 720
+    },
+    {
+      "id": "a_put_box",
+      "type": "send_operation",
+      "label": "放下满箱到P4",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task_geely",
+        "task": "put_down_box",
+        "area": "P4",
+        "robot_id": "robot_a",
+        "timeout": 1200
+      },
+      "x": 640,
+      "y": 720
+    },
+    {
+      "id": "b_assembly",
+      "type": "send_operation",
+      "label": "robot_b装配 assembly",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "assembly",
+        "area": "",
+        "robot_id": "robot_b",
+        "timeout": 1200
+      },
+      "x": 920,
+      "y": 720
+    },
+    {
+      "id": "b_continue",
+      "type": "send_operation",
+      "label": "robot_b继续装配",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "continue_assembly",
+        "area": "",
+        "robot_id": "robot_b",
+        "timeout": 1200
+      },
+      "x": 1200,
+      "y": 720
+    },
+    {
+      "id": "done",
+      "type": "update_step",
+      "label": "本轮完成",
+      "params": {
+        "robot_id": "robot_a",
+        "step": "simple_line 完成：拆垛→AB零件→搬箱→组装",
+        "message": ""
+      },
+      "x": 1480,
+      "y": 720
+    },
+    {
+      "id": "wait_for_command_1",
+      "type": "wait_for_command",
+      "label": "等待外部命令",
+      "params": {
+        "event_name": "MANUAL_RESET_COMPLETED",
+        "dryrun_params": {}
+      },
+      "x": 19,
+      "y": 89
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "c_destack",
+      "target": "a_nav_p1",
+      "when": "success"
+    },
+    {
+      "id": "e1f",
+      "source": "c_destack",
+      "target": "c_destack_delay",
+      "when": "failure"
+    },
+    {
+      "id": "e1r",
+      "source": "c_destack_delay",
+      "target": "c_destack",
+      "when": "default"
+    },
+    {
+      "id": "e2",
+      "source": "a_nav_p1",
+      "target": "a_pick_a",
+      "when": "success"
+    },
+    {
+      "id": "e3",
+      "source": "a_pick_a",
+      "target": "a_nav_p31_a",
+      "when": "success"
+    },
+    {
+      "id": "e3f",
+      "source": "a_pick_a",
+      "target": "a_abort_a",
+      "when": "failure"
+    },
+    {
+      "id": "e4",
+      "source": "a_nav_p31_a",
+      "target": "a_put_a",
+      "when": "success"
+    },
+    {
+      "id": "e5",
+      "source": "a_put_a",
+      "target": "a_nav_p2",
+      "when": "success"
+    },
+    {
+      "id": "e6",
+      "source": "a_nav_p2",
+      "target": "a_pick_b",
+      "when": "success"
+    },
+    {
+      "id": "e7",
+      "source": "a_pick_b",
+      "target": "a_nav_p31_b",
+      "when": "success"
+    },
+    {
+      "id": "e7f",
+      "source": "a_pick_b",
+      "target": "a_abort_b",
+      "when": "failure"
+    },
+    {
+      "id": "e8",
+      "source": "a_nav_p31_b",
+      "target": "a_put_b",
+      "when": "success"
+    },
+    {
+      "id": "e9",
+      "source": "a_put_b",
+      "target": "a_pick_box",
+      "when": "success"
+    },
+    {
+      "id": "e10",
+      "source": "a_pick_box",
+      "target": "a_nav_p4",
+      "when": "success"
+    },
+    {
+      "id": "e11",
+      "source": "a_nav_p4",
+      "target": "a_put_box",
+      "when": "success"
+    },
+    {
+      "id": "e12",
+      "source": "a_put_box",
+      "target": "b_assembly",
+      "when": "success"
+    },
+    {
+      "id": "e13",
+      "source": "b_assembly",
+      "target": "b_continue",
+      "when": "success"
+    },
+    {
+      "id": "e14",
+      "source": "b_continue",
+      "target": "done",
+      "when": "success"
+    },
+    {
+      "id": "e_1788771055134",
+      "source": "wait_for_command_1",
+      "target": "c_destack",
+      "when": "success"
+    }
+  ]
+}

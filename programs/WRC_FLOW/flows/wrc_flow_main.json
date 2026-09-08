@@ -1,16 +1,6 @@
 {
-  "flow_id": "wrc_flow_main",
-  "description": "WRC_FLOW 演示流程：完整对照 programs/WRC/WRC.py 的 _execute_trans_component_async（robot_a 分拣搬运）与 _execute_assemble_async（robot_b 装配）两条并行循环改写而成。用简化的字符串上下文变量（p1_state / P3_1_state / P3_2_state / p4_state）代替真实的 SlotTracker 持久化状态，控制流结构（动态选槽位、P4 三态分支、按 P1 余量回点）与原流程保持一致。循环用环形连线表达，PROCESS_ENDED 通过 stop_event 中断两条分支。",
   "start": "p_start",
-  "context_vars": {
-    "robot_id_a": "robot_a",
-    "robot_id_b": "robot_b",
-    "robot_id_c": "robot_c",
-    "p1_state": "EMPTY",
-    "P3_1_state": "EMPTY",
-    "P3_2_state": "EMPTY",
-    "p4_state": "NO_BOX"
-  },
+  "enabled": false,
   "nodes": [
     {
       "id": "p_start",
@@ -22,7 +12,9 @@
           "b1_wait_p4_full"
         ],
         "join": "all"
-      }
+      },
+      "x": 60,
+      "y": 60
     },
     {
       "id": "a1_wait_reset",
@@ -31,7 +23,24 @@
       "params": {
         "event_name": "manual_reset",
         "timeout": null
-      }
+      },
+      "x": 280,
+      "y": 60
+    },
+    {
+      "id": "a1_c_destack",
+      "type": "send_operation",
+      "label": "robot_c拆垛：向P1与P2放置料箱",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "pick_box_to_sp",
+        "area": "",
+        "robot_id": "robot_c",
+        "timeout": 1200
+      },
+      "x": 500,
+      "y": 60
     },
     {
       "id": "a1b_set_p1_full",
@@ -40,7 +49,9 @@
       "params": {
         "var": "p1_state",
         "value": "FULL"
-      }
+      },
+      "x": 720,
+      "y": 60
     },
     {
       "id": "a2_nav_p1",
@@ -48,9 +59,11 @@
       "label": "导航到P1点位",
       "params": {
         "pose": "P1",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 941,
+      "y": 55
     },
     {
       "id": "a2f_delay",
@@ -58,7 +71,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 60,
+      "y": 200
     },
     {
       "id": "a3_pick_a",
@@ -67,17 +82,21 @@
       "params": {
         "call_type": "service",
         "task": "pick_up_component_A",
-        "area": "P1",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "area": "point_1",
+        "robot_id": "robot_a"
+      },
+      "x": 280,
+      "y": 200
     },
     {
-      "id": "a3f_delay",
-      "type": "delay",
-      "label": "抓取失败重试前等待",
+      "id": "a_abort_pick",
+      "type": "abort_flow",
+      "label": "分拣失败，结束整个流程",
       "params": {
-        "seconds": 3
-      }
+        "message": "分拣零件失败，流程结束"
+      },
+      "x": 500,
+      "y": 200
     },
     {
       "id": "a3_note",
@@ -85,8 +104,10 @@
       "label": "记录：抓取零件A(P1)",
       "params": {
         "step": "抓取零件A在P1点位",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 720,
+      "y": 200
     },
     {
       "id": "a4_find_slot",
@@ -99,7 +120,9 @@
         ],
         "want_state": "EMPTY",
         "output_var": "p3_n"
-      }
+      },
+      "x": 940,
+      "y": 200
     },
     {
       "id": "a4_error_no_empty",
@@ -108,8 +131,10 @@
       "params": {
         "step": "P3区域没有空箱子槽位",
         "message": "参照WRC.py: set_error后return",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 60,
+      "y": 340
     },
     {
       "id": "a5_nav_p3n",
@@ -117,9 +142,11 @@
       "label": "导航到{{p3_n}}放置零件A",
       "params": {
         "pose": "{{p3_n}}",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 280,
+      "y": 340
     },
     {
       "id": "a5f_delay",
@@ -127,7 +154,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 500,
+      "y": 340
     },
     {
       "id": "a6_put_a",
@@ -137,8 +166,10 @@
         "call_type": "service",
         "task": "put_down_component_A",
         "area": "{{p3_n}}",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 720,
+      "y": 340
     },
     {
       "id": "a6f_delay",
@@ -146,7 +177,9 @@
       "label": "放置失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 940,
+      "y": 340
     },
     {
       "id": "a7_set_p3_half",
@@ -155,7 +188,9 @@
       "params": {
         "var": "{{p3_n}}_state",
         "value": "HALF"
-      }
+      },
+      "x": 60,
+      "y": 480
     },
     {
       "id": "a8_check_p1_full",
@@ -165,7 +200,9 @@
         "var": "p1_state",
         "op": "==",
         "value": "FULL"
-      }
+      },
+      "x": 280,
+      "y": 480
     },
     {
       "id": "a8t_set_p1_half",
@@ -174,7 +211,9 @@
       "params": {
         "var": "p1_state",
         "value": "HALF"
-      }
+      },
+      "x": 500,
+      "y": 480
     },
     {
       "id": "a8f_set_p1_empty",
@@ -183,7 +222,9 @@
       "params": {
         "var": "p1_state",
         "value": "EMPTY"
-      }
+      },
+      "x": 720,
+      "y": 480
     },
     {
       "id": "a9_nav_p2",
@@ -191,9 +232,11 @@
       "label": "导航到P2点位抓取零件B",
       "params": {
         "pose": "P2",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 940,
+      "y": 480
     },
     {
       "id": "a9f_delay",
@@ -201,7 +244,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 60,
+      "y": 620
     },
     {
       "id": "a10_pick_b",
@@ -210,17 +255,11 @@
       "params": {
         "call_type": "service",
         "task": "pick_up_component_B",
-        "area": "P2",
-        "robot_id": "{{robot_id_a}}"
-      }
-    },
-    {
-      "id": "a10f_delay",
-      "type": "delay",
-      "label": "抓取失败重试前等待",
-      "params": {
-        "seconds": 3
-      }
+        "area": "point_2",
+        "robot_id": "robot_a"
+      },
+      "x": 280,
+      "y": 620
     },
     {
       "id": "a11_nav_p3n_again",
@@ -228,9 +267,11 @@
       "label": "再次导航到{{p3_n}}放置零件B",
       "params": {
         "pose": "{{p3_n}}",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 500,
+      "y": 620
     },
     {
       "id": "a11f_delay",
@@ -238,7 +279,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 720,
+      "y": 620
     },
     {
       "id": "a12_put_b",
@@ -248,8 +291,10 @@
         "call_type": "service",
         "task": "put_down_component_B",
         "area": "{{p3_n}}",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 940,
+      "y": 620
     },
     {
       "id": "a12f_delay",
@@ -257,7 +302,9 @@
       "label": "放置失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 60,
+      "y": 760
     },
     {
       "id": "a13_set_p3_full",
@@ -266,7 +313,9 @@
       "params": {
         "var": "{{p3_n}}_state",
         "value": "FULL"
-      }
+      },
+      "x": 280,
+      "y": 760
     },
     {
       "id": "a14_check_p4_full",
@@ -276,7 +325,9 @@
         "var": "p4_state",
         "op": "==",
         "value": "FULL"
-      }
+      },
+      "x": 500,
+      "y": 760
     },
     {
       "id": "a14_wait_delay",
@@ -284,7 +335,9 @@
       "label": "在{{p3_n}}前等待P4装配腾空",
       "params": {
         "seconds": 2
-      }
+      },
+      "x": 720,
+      "y": 760
     },
     {
       "id": "a15_check_p4_nobox",
@@ -294,7 +347,9 @@
         "var": "p4_state",
         "op": "==",
         "value": "NO_BOX"
-      }
+      },
+      "x": 940,
+      "y": 760
     },
     {
       "id": "a16_nav_p3n_direct",
@@ -302,9 +357,11 @@
       "label": "[无箱直搬]导航到{{p3_n}}满箱点位",
       "params": {
         "pose": "{{p3_n}}",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 60,
+      "y": 900
     },
     {
       "id": "a16f_delay",
@@ -312,7 +369,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 280,
+      "y": 900
     },
     {
       "id": "a17_pick_full_box",
@@ -323,8 +382,10 @@
         "service": "robot_task_geely",
         "task": "pick_up_box",
         "area": "{{p3_n}}",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 500,
+      "y": 900
     },
     {
       "id": "a17f_delay",
@@ -332,7 +393,9 @@
       "label": "搬箱失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 720,
+      "y": 900
     },
     {
       "id": "a18_nav_p4",
@@ -340,9 +403,11 @@
       "label": "[无箱直搬]导航到P4点位",
       "params": {
         "pose": "P4",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 940,
+      "y": 900
     },
     {
       "id": "a18f_delay",
@@ -350,7 +415,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 60,
+      "y": 1040
     },
     {
       "id": "a19_put_full_box",
@@ -360,9 +427,11 @@
         "call_type": "service",
         "service": "robot_task_geely",
         "task": "put_down_box",
-        "area": "P4",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "area": "point_4",
+        "robot_id": "robot_a"
+      },
+      "x": 280,
+      "y": 1040
     },
     {
       "id": "a19f_delay",
@@ -370,7 +439,9 @@
       "label": "放箱失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 500,
+      "y": 1040
     },
     {
       "id": "a19a_set_p3n_nobox",
@@ -379,7 +450,9 @@
       "params": {
         "var": "{{p3_n}}_state",
         "value": "NO_BOX"
-      }
+      },
+      "x": 720,
+      "y": 1040
     },
     {
       "id": "a19b_set_p4_full",
@@ -388,7 +461,9 @@
       "params": {
         "var": "p4_state",
         "value": "FULL"
-      }
+      },
+      "x": 940,
+      "y": 1040
     },
     {
       "id": "a20_nav_p4_takeempty",
@@ -396,9 +471,11 @@
       "label": "[换箱]导航到P4点位取空箱",
       "params": {
         "pose": "P4",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 60,
+      "y": 1180
     },
     {
       "id": "a20f_delay",
@@ -406,7 +483,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 280,
+      "y": 1180
     },
     {
       "id": "a21_pick_empty_box",
@@ -416,9 +495,11 @@
         "call_type": "service",
         "service": "robot_task_geely",
         "task": "pick_up_box",
-        "area": "P4",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "area": "point_4",
+        "robot_id": "robot_a"
+      },
+      "x": 500,
+      "y": 1180
     },
     {
       "id": "a21f_delay",
@@ -426,7 +507,9 @@
       "label": "搬箱失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 720,
+      "y": 1180
     },
     {
       "id": "a22_find_nobox_slot",
@@ -439,7 +522,9 @@
         ],
         "want_state": "NO_BOX",
         "output_var": "p3_k"
-      }
+      },
+      "x": 940,
+      "y": 1180
     },
     {
       "id": "a22_error_no_nobox",
@@ -447,8 +532,10 @@
       "label": "异常：P3没有无箱槽位，流程终止",
       "params": {
         "step": "P3区域没有无箱子槽位，无法接收P4空箱",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 60,
+      "y": 1320
     },
     {
       "id": "a23_nav_p3k",
@@ -456,9 +543,11 @@
       "label": "[换箱]导航到{{p3_k}}空点位",
       "params": {
         "pose": "{{p3_k}}",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 280,
+      "y": 1320
     },
     {
       "id": "a23f_delay",
@@ -466,7 +555,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 500,
+      "y": 1320
     },
     {
       "id": "a24_put_empty_box",
@@ -477,8 +568,10 @@
         "service": "robot_task_geely",
         "task": "put_down_box",
         "area": "{{p3_k}}",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 720,
+      "y": 1320
     },
     {
       "id": "a24f_delay",
@@ -486,7 +579,9 @@
       "label": "放箱失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 940,
+      "y": 1320
     },
     {
       "id": "a24a_set_p4_nobox",
@@ -495,7 +590,9 @@
       "params": {
         "var": "p4_state",
         "value": "NO_BOX"
-      }
+      },
+      "x": 60,
+      "y": 1460
     },
     {
       "id": "a24b_set_p3k_empty",
@@ -504,7 +601,9 @@
       "params": {
         "var": "{{p3_k}}_state",
         "value": "EMPTY"
-      }
+      },
+      "x": 280,
+      "y": 1460
     },
     {
       "id": "a25_nav_p3n_full",
@@ -512,9 +611,11 @@
       "label": "[换箱]导航到{{p3_n}}满箱子点位",
       "params": {
         "pose": "{{p3_n}}",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 500,
+      "y": 1460
     },
     {
       "id": "a25f_delay",
@@ -522,7 +623,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 720,
+      "y": 1460
     },
     {
       "id": "a26_pick_full_box2",
@@ -533,8 +636,10 @@
         "service": "robot_task_geely",
         "task": "pick_up_box",
         "area": "{{p3_n}}",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 940,
+      "y": 1460
     },
     {
       "id": "a26f_delay",
@@ -542,7 +647,9 @@
       "label": "搬箱失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 60,
+      "y": 1600
     },
     {
       "id": "a27_nav_p4_again",
@@ -550,9 +657,11 @@
       "label": "[换箱]再次导航到P4点位",
       "params": {
         "pose": "P4",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 280,
+      "y": 1600
     },
     {
       "id": "a27f_delay",
@@ -560,7 +669,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 500,
+      "y": 1600
     },
     {
       "id": "a28_put_full_box2",
@@ -570,9 +681,11 @@
         "call_type": "service",
         "service": "robot_task_geely",
         "task": "put_down_box",
-        "area": "P4",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "area": "point_4",
+        "robot_id": "robot_a"
+      },
+      "x": 720,
+      "y": 1600
     },
     {
       "id": "a28f_delay",
@@ -580,7 +693,9 @@
       "label": "放箱失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 940,
+      "y": 1600
     },
     {
       "id": "a28a_set_p3n_nobox2",
@@ -589,7 +704,9 @@
       "params": {
         "var": "{{p3_n}}_state",
         "value": "NO_BOX"
-      }
+      },
+      "x": 60,
+      "y": 1740
     },
     {
       "id": "a28b_set_p4_full2",
@@ -598,7 +715,9 @@
       "params": {
         "var": "p4_state",
         "value": "FULL"
-      }
+      },
+      "x": 280,
+      "y": 1740
     },
     {
       "id": "a30_check_p1_empty",
@@ -608,7 +727,9 @@
         "var": "p1_state",
         "op": "==",
         "value": "EMPTY"
-      }
+      },
+      "x": 500,
+      "y": 1740
     },
     {
       "id": "a31_nav_home",
@@ -616,9 +737,11 @@
       "label": "P1/P2零件已空：导航回home等待补料",
       "params": {
         "pose": "home",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 720,
+      "y": 1740
     },
     {
       "id": "a31f_delay",
@@ -626,7 +749,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 940,
+      "y": 1740
     },
     {
       "id": "a32_nav_p1_return",
@@ -634,9 +759,11 @@
       "label": "P1仍有零件：导航回P1继续分拣",
       "params": {
         "pose": "P1",
-        "robot_id": "{{robot_id_a}}",
+        "robot_id": "robot_a",
         "skip_if_at_pose": true
-      }
+      },
+      "x": 60,
+      "y": 1880
     },
     {
       "id": "a32f_delay",
@@ -644,7 +771,9 @@
       "label": "导航失败重试前等待",
       "params": {
         "seconds": 3
-      }
+      },
+      "x": 280,
+      "y": 1880
     },
     {
       "id": "a33_note_cycle_done",
@@ -652,8 +781,10 @@
       "label": "记录：完成一个分拣搬运周期",
       "params": {
         "step": "完成一个分拣搬运周期，等待下一周期",
-        "robot_id": "{{robot_id_a}}"
-      }
+        "robot_id": "robot_a"
+      },
+      "x": 500,
+      "y": 1880
     },
     {
       "id": "b1_wait_p4_full",
@@ -663,7 +794,9 @@
         "var": "p4_state",
         "op": "==",
         "value": "FULL"
-      }
+      },
+      "x": 720,
+      "y": 1880
     },
     {
       "id": "b1_wait_delay",
@@ -671,7 +804,9 @@
       "label": "等待P4满箱子（轮询）",
       "params": {
         "seconds": 1
-      }
+      },
+      "x": 940,
+      "y": 1880
     },
     {
       "id": "b2_do_assembly",
@@ -680,8 +815,10 @@
       "params": {
         "call_type": "service",
         "task": "assembly",
-        "robot_id": "{{robot_id_b}}"
-      }
+        "robot_id": "robot_b"
+      },
+      "x": 60,
+      "y": 2020
     },
     {
       "id": "b2f_delay",
@@ -689,7 +826,9 @@
       "label": "装配失败重试前等待",
       "params": {
         "seconds": 5
-      }
+      },
+      "x": 280,
+      "y": 2020
     },
     {
       "id": "b3_set_p4_empty",
@@ -698,7 +837,9 @@
       "params": {
         "var": "p4_state",
         "value": "EMPTY"
-      }
+      },
+      "x": 500,
+      "y": 2020
     },
     {
       "id": "b4_continue_assembly",
@@ -707,8 +848,10 @@
       "params": {
         "call_type": "service",
         "task": "continue_assembly",
-        "robot_id": "{{robot_id_b}}"
-      }
+        "robot_id": "robot_b"
+      },
+      "x": 720,
+      "y": 2020
     },
     {
       "id": "b4f_delay",
@@ -716,7 +859,9 @@
       "label": "继续装配失败重试前等待",
       "params": {
         "seconds": 5
-      }
+      },
+      "x": 940,
+      "y": 2020
     },
     {
       "id": "b5_note_cycle_done",
@@ -724,527 +869,633 @@
       "label": "记录：完成一轮装配",
       "params": {
         "step": "完成一轮装配，等待下一周期",
-        "robot_id": "{{robot_id_b}}"
-      }
+        "robot_id": "robot_b"
+      },
+      "x": 60,
+      "y": 2160
     }
   ],
   "edges": [
     {
+      "id": "e0",
       "source": "a1_wait_reset",
+      "target": "a1_c_destack",
+      "when": "success"
+    },
+    {
+      "id": "e1",
+      "source": "a1_c_destack",
       "target": "a1b_set_p1_full",
       "when": "success"
     },
     {
+      "id": "e2",
+      "source": "a1_c_destack",
+      "target": "a1_wait_reset",
+      "when": "failure"
+    },
+    {
+      "id": "e3",
       "source": "a1b_set_p1_full",
       "target": "a2_nav_p1",
       "when": "default"
     },
     {
+      "id": "e4",
       "source": "a2_nav_p1",
       "target": "a3_pick_a",
       "when": "success"
     },
     {
+      "id": "e5",
       "source": "a2_nav_p1",
       "target": "a2f_delay",
       "when": "failure"
     },
     {
+      "id": "e6",
       "source": "a2f_delay",
       "target": "a2_nav_p1",
       "when": "default"
     },
     {
+      "id": "e7",
       "source": "a3_pick_a",
       "target": "a3_note",
       "when": "success"
     },
     {
+      "id": "e8",
       "source": "a3_pick_a",
-      "target": "a3f_delay",
+      "target": "a_abort_pick",
       "when": "failure"
     },
     {
-      "source": "a3f_delay",
-      "target": "a3_pick_a",
-      "when": "default"
-    },
-    {
+      "id": "e9",
       "source": "a3_note",
       "target": "a4_find_slot",
       "when": "default"
     },
     {
+      "id": "e10",
       "source": "a4_find_slot",
       "target": "a5_nav_p3n",
       "when": "success"
     },
     {
+      "id": "e11",
       "source": "a4_find_slot",
       "target": "a4_error_no_empty",
       "when": "failure"
     },
     {
+      "id": "e12",
       "source": "a5_nav_p3n",
       "target": "a6_put_a",
       "when": "success"
     },
     {
+      "id": "e13",
       "source": "a5_nav_p3n",
       "target": "a5f_delay",
       "when": "failure"
     },
     {
+      "id": "e14",
       "source": "a5f_delay",
       "target": "a5_nav_p3n",
       "when": "default"
     },
     {
+      "id": "e15",
       "source": "a6_put_a",
       "target": "a7_set_p3_half",
       "when": "success"
     },
     {
+      "id": "e16",
       "source": "a6_put_a",
       "target": "a6f_delay",
       "when": "failure"
     },
     {
+      "id": "e17",
       "source": "a6f_delay",
       "target": "a6_put_a",
       "when": "default"
     },
     {
+      "id": "e18",
       "source": "a7_set_p3_half",
       "target": "a8_check_p1_full",
       "when": "default"
     },
     {
+      "id": "e19",
       "source": "a8_check_p1_full",
       "target": "a8t_set_p1_half",
       "when": "true"
     },
     {
+      "id": "e20",
       "source": "a8_check_p1_full",
       "target": "a8f_set_p1_empty",
       "when": "false"
     },
     {
+      "id": "e21",
       "source": "a8t_set_p1_half",
       "target": "a9_nav_p2",
       "when": "default"
     },
     {
+      "id": "e22",
       "source": "a8f_set_p1_empty",
       "target": "a9_nav_p2",
       "when": "default"
     },
     {
+      "id": "e23",
       "source": "a9_nav_p2",
       "target": "a10_pick_b",
       "when": "success"
     },
     {
+      "id": "e24",
       "source": "a9_nav_p2",
       "target": "a9f_delay",
       "when": "failure"
     },
     {
+      "id": "e25",
       "source": "a9f_delay",
       "target": "a9_nav_p2",
       "when": "default"
     },
     {
+      "id": "e26",
       "source": "a10_pick_b",
       "target": "a11_nav_p3n_again",
       "when": "success"
     },
     {
+      "id": "e27",
       "source": "a10_pick_b",
-      "target": "a10f_delay",
+      "target": "a_abort_pick",
       "when": "failure"
     },
     {
-      "source": "a10f_delay",
-      "target": "a10_pick_b",
-      "when": "default"
-    },
-    {
+      "id": "e28",
       "source": "a11_nav_p3n_again",
       "target": "a12_put_b",
       "when": "success"
     },
     {
+      "id": "e29",
       "source": "a11_nav_p3n_again",
       "target": "a11f_delay",
       "when": "failure"
     },
     {
+      "id": "e30",
       "source": "a11f_delay",
       "target": "a11_nav_p3n_again",
       "when": "default"
     },
     {
+      "id": "e31",
       "source": "a12_put_b",
       "target": "a13_set_p3_full",
       "when": "success"
     },
     {
+      "id": "e32",
       "source": "a12_put_b",
       "target": "a12f_delay",
       "when": "failure"
     },
     {
+      "id": "e33",
       "source": "a12f_delay",
       "target": "a12_put_b",
       "when": "default"
     },
     {
+      "id": "e34",
       "source": "a13_set_p3_full",
       "target": "a14_check_p4_full",
       "when": "default"
     },
     {
+      "id": "e35",
       "source": "a14_check_p4_full",
       "target": "a14_wait_delay",
       "when": "true"
     },
     {
+      "id": "e36",
       "source": "a14_wait_delay",
       "target": "a14_check_p4_full",
       "when": "default"
     },
     {
+      "id": "e37",
       "source": "a14_check_p4_full",
       "target": "a15_check_p4_nobox",
       "when": "false"
     },
     {
+      "id": "e38",
       "source": "a15_check_p4_nobox",
       "target": "a16_nav_p3n_direct",
       "when": "true"
     },
     {
+      "id": "e39",
       "source": "a15_check_p4_nobox",
       "target": "a20_nav_p4_takeempty",
       "when": "false"
     },
     {
+      "id": "e40",
       "source": "a16_nav_p3n_direct",
       "target": "a17_pick_full_box",
       "when": "success"
     },
     {
+      "id": "e41",
       "source": "a16_nav_p3n_direct",
       "target": "a16f_delay",
       "when": "failure"
     },
     {
+      "id": "e42",
       "source": "a16f_delay",
       "target": "a16_nav_p3n_direct",
       "when": "default"
     },
     {
+      "id": "e43",
       "source": "a17_pick_full_box",
       "target": "a18_nav_p4",
       "when": "success"
     },
     {
+      "id": "e44",
       "source": "a17_pick_full_box",
       "target": "a17f_delay",
       "when": "failure"
     },
     {
+      "id": "e45",
       "source": "a17f_delay",
       "target": "a17_pick_full_box",
       "when": "default"
     },
     {
+      "id": "e46",
       "source": "a18_nav_p4",
       "target": "a19_put_full_box",
       "when": "success"
     },
     {
+      "id": "e47",
       "source": "a18_nav_p4",
       "target": "a18f_delay",
       "when": "failure"
     },
     {
+      "id": "e48",
       "source": "a18f_delay",
       "target": "a18_nav_p4",
       "when": "default"
     },
     {
+      "id": "e49",
       "source": "a19_put_full_box",
       "target": "a19a_set_p3n_nobox",
       "when": "success"
     },
     {
+      "id": "e50",
       "source": "a19_put_full_box",
       "target": "a19f_delay",
       "when": "failure"
     },
     {
+      "id": "e51",
       "source": "a19f_delay",
       "target": "a19_put_full_box",
       "when": "default"
     },
     {
+      "id": "e52",
       "source": "a19a_set_p3n_nobox",
       "target": "a19b_set_p4_full",
       "when": "default"
     },
     {
+      "id": "e53",
       "source": "a19b_set_p4_full",
       "target": "a30_check_p1_empty",
       "when": "default"
     },
     {
+      "id": "e54",
       "source": "a20_nav_p4_takeempty",
       "target": "a21_pick_empty_box",
       "when": "success"
     },
     {
+      "id": "e55",
       "source": "a20_nav_p4_takeempty",
       "target": "a20f_delay",
       "when": "failure"
     },
     {
+      "id": "e56",
       "source": "a20f_delay",
       "target": "a20_nav_p4_takeempty",
       "when": "default"
     },
     {
+      "id": "e57",
       "source": "a21_pick_empty_box",
       "target": "a22_find_nobox_slot",
       "when": "success"
     },
     {
+      "id": "e58",
       "source": "a21_pick_empty_box",
       "target": "a21f_delay",
       "when": "failure"
     },
     {
+      "id": "e59",
       "source": "a21f_delay",
       "target": "a21_pick_empty_box",
       "when": "default"
     },
     {
+      "id": "e60",
       "source": "a22_find_nobox_slot",
       "target": "a23_nav_p3k",
       "when": "success"
     },
     {
+      "id": "e61",
       "source": "a22_find_nobox_slot",
       "target": "a22_error_no_nobox",
       "when": "failure"
     },
     {
+      "id": "e62",
       "source": "a23_nav_p3k",
       "target": "a24_put_empty_box",
       "when": "success"
     },
     {
+      "id": "e63",
       "source": "a23_nav_p3k",
       "target": "a23f_delay",
       "when": "failure"
     },
     {
+      "id": "e64",
       "source": "a23f_delay",
       "target": "a23_nav_p3k",
       "when": "default"
     },
     {
+      "id": "e65",
       "source": "a24_put_empty_box",
       "target": "a24a_set_p4_nobox",
       "when": "success"
     },
     {
+      "id": "e66",
       "source": "a24_put_empty_box",
       "target": "a24f_delay",
       "when": "failure"
     },
     {
+      "id": "e67",
       "source": "a24f_delay",
       "target": "a24_put_empty_box",
       "when": "default"
     },
     {
+      "id": "e68",
       "source": "a24a_set_p4_nobox",
       "target": "a24b_set_p3k_empty",
       "when": "default"
     },
     {
+      "id": "e69",
       "source": "a24b_set_p3k_empty",
       "target": "a25_nav_p3n_full",
       "when": "default"
     },
     {
+      "id": "e70",
       "source": "a25_nav_p3n_full",
       "target": "a26_pick_full_box2",
       "when": "success"
     },
     {
+      "id": "e71",
       "source": "a25_nav_p3n_full",
       "target": "a25f_delay",
       "when": "failure"
     },
     {
+      "id": "e72",
       "source": "a25f_delay",
       "target": "a25_nav_p3n_full",
       "when": "default"
     },
     {
+      "id": "e73",
       "source": "a26_pick_full_box2",
       "target": "a27_nav_p4_again",
       "when": "success"
     },
     {
+      "id": "e74",
       "source": "a26_pick_full_box2",
       "target": "a26f_delay",
       "when": "failure"
     },
     {
+      "id": "e75",
       "source": "a26f_delay",
       "target": "a26_pick_full_box2",
       "when": "default"
     },
     {
+      "id": "e76",
       "source": "a27_nav_p4_again",
       "target": "a28_put_full_box2",
       "when": "success"
     },
     {
+      "id": "e77",
       "source": "a27_nav_p4_again",
       "target": "a27f_delay",
       "when": "failure"
     },
     {
+      "id": "e78",
       "source": "a27f_delay",
       "target": "a27_nav_p4_again",
       "when": "default"
     },
     {
+      "id": "e79",
       "source": "a28_put_full_box2",
       "target": "a28a_set_p3n_nobox2",
       "when": "success"
     },
     {
+      "id": "e80",
       "source": "a28_put_full_box2",
       "target": "a28f_delay",
       "when": "failure"
     },
     {
+      "id": "e81",
       "source": "a28f_delay",
       "target": "a28_put_full_box2",
       "when": "default"
     },
     {
+      "id": "e82",
       "source": "a28a_set_p3n_nobox2",
       "target": "a28b_set_p4_full2",
       "when": "default"
     },
     {
+      "id": "e83",
       "source": "a28b_set_p4_full2",
       "target": "a30_check_p1_empty",
       "when": "default"
     },
     {
+      "id": "e84",
       "source": "a30_check_p1_empty",
       "target": "a31_nav_home",
       "when": "true"
     },
     {
+      "id": "e85",
       "source": "a31_nav_home",
       "target": "a33_note_cycle_done",
       "when": "success"
     },
     {
+      "id": "e86",
       "source": "a31_nav_home",
       "target": "a31f_delay",
       "when": "failure"
     },
     {
+      "id": "e87",
       "source": "a31f_delay",
       "target": "a31_nav_home",
       "when": "default"
     },
     {
+      "id": "e88",
       "source": "a30_check_p1_empty",
       "target": "a32_nav_p1_return",
       "when": "false"
     },
     {
+      "id": "e89",
       "source": "a32_nav_p1_return",
       "target": "a33_note_cycle_done",
       "when": "success"
     },
     {
+      "id": "e90",
       "source": "a32_nav_p1_return",
       "target": "a32f_delay",
       "when": "failure"
     },
     {
+      "id": "e91",
       "source": "a32f_delay",
       "target": "a32_nav_p1_return",
       "when": "default"
     },
     {
+      "id": "e92",
       "source": "a33_note_cycle_done",
       "target": "a1_wait_reset",
       "when": "default"
     },
     {
+      "id": "e93",
       "source": "b1_wait_p4_full",
       "target": "b2_do_assembly",
       "when": "true"
     },
     {
+      "id": "e94",
       "source": "b1_wait_p4_full",
       "target": "b1_wait_delay",
       "when": "false"
     },
     {
+      "id": "e95",
       "source": "b1_wait_delay",
       "target": "b1_wait_p4_full",
       "when": "default"
     },
     {
+      "id": "e96",
       "source": "b2_do_assembly",
       "target": "b3_set_p4_empty",
       "when": "success"
     },
     {
+      "id": "e97",
       "source": "b2_do_assembly",
       "target": "b2f_delay",
       "when": "failure"
     },
     {
+      "id": "e98",
       "source": "b2f_delay",
       "target": "b2_do_assembly",
       "when": "default"
     },
     {
+      "id": "e99",
       "source": "b3_set_p4_empty",
       "target": "b4_continue_assembly",
       "when": "default"
     },
     {
+      "id": "e100",
       "source": "b4_continue_assembly",
       "target": "b5_note_cycle_done",
       "when": "success"
     },
     {
+      "id": "e101",
       "source": "b4_continue_assembly",
       "target": "b4f_delay",
       "when": "failure"
     },
     {
+      "id": "e102",
       "source": "b4f_delay",
       "target": "b4_continue_assembly",
       "when": "default"
     },
     {
+      "id": "e103",
       "source": "b5_note_cycle_done",
       "target": "b1_wait_p4_full",
       "when": "default"

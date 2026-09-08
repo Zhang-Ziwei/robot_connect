@@ -142,9 +142,9 @@ string current_params
 | 字段 | ROS 类型 | 说明 |
 |---|---|---|
 | `robot_task_types` | `navi_types/RobotTaskTypes` | rosbridge 中为 `{"type": uint8}`，KAIAO 默认 `0` |
-| `task` | `string` | 任务名：`pick_up_box` / `put_down_box` / `pick_up_component` / `put_down_component` |
-| `area` | `string` | `"agv_car"` 或 `"shelf"` |
-| `extra_params` | `string` | **必须是 JSON 字符串**；箱子任务仅含 `shelf_level`（HTTP `shelf_num[1]` row） |
+| `task` | `string` | 任务名：`pick_up_box` / `pick_up_heavy_box` / `put_down_box` / `put_down_heavy_box` / `pick_up_component` / `put_down_component` / `adjust_pose` |
+| `area` | `string` | `"agv_car"` / `"shelf"` / `"component_car"`（视 task 而定） |
+| `extra_params` | `string` | **必须是 JSON 字符串**；箱子任务含 `shelf_level`（HTTP `shelf_num[1]` row）及 `task_only_id` |
 
 ### 2.4 内层 Feedback（`feedback` 字段内容）
 
@@ -202,6 +202,22 @@ string current_params
 |---|---|
 | `area` | HTTP `shelf_type`：`"agv_car"` 或 `"shelf"` |
 | `extra_params.shelf_level` | 垂直层 0–3（HTTP `shelf_num[1]` row，从下往上） |
+| `extra_params.task_only_id` | 每次下发的唯一识别码 |
+
+---
+
+### 3.1.1 `pick_up_heavy_box` — 搬起重箱
+
+**场景**：从 **货架** 搬走的箱子累计零件重量 ≥ 0.8kg。输入输出与 `pick_up_box` 相同，但 `area` **只能是 `shelf`**（AGV 上车箱视为空/0kg，不走此任务）。
+
+```json
+{
+  "robot_task_types": { "type": 0 },
+  "task": "pick_up_heavy_box",
+  "area": "shelf",
+  "extra_params": "{\"shelf_level\":2,\"task_only_id\":\"...\"}"
+}
+```
 
 ---
 
@@ -225,6 +241,21 @@ string current_params
 
 ---
 
+### 3.2.1 `put_down_heavy_box` — 放下重箱
+
+**场景**：`PICK_BOX_TO_SP` 中本次抓取用了 `pick_up_heavy_box` 时，放箱必须成对调用本任务（不能再用 `put_down_box`）。输入与 `put_down_box` 相同（含 `same_level_movement`），`area` 可以是 `agv_car` 或 `shelf`。
+
+```json
+{
+  "robot_task_types": { "type": 0 },
+  "task": "put_down_heavy_box",
+  "area": "agv_car",
+  "extra_params": "{\"shelf_level\":2,\"same_level_movement\":0,\"task_only_id\":\"...\"}"
+}
+```
+
+---
+
 ### 3.3 `pick_up_component` — 抓取零件
 
 **场景**：`PICK_COMPONENT_TO_SP` 在闪攀小车（AGV）侧取件。
@@ -233,17 +264,18 @@ string current_params
 {
   "robot_task_types": { "type": 0 },
   "task": "pick_up_component",
-  "area": "agv_car",
-  "extra_params": "{\"shelf_level\":1,\"type\":\"black_screw\",\"number\":1}"
+  "area": "component_car",
+  "extra_params": "{\"shelf_level\":0,\"box_num\":0,\"type\":\"black_screw\",\"number\":1}"
 }
 ```
 
 | 参数 | 说明 |
 |---|---|
-| `area` | 固定 `"agv_car"`（闪攀小车侧） |
+| `area` | 固定 `"component_car"`（闪攀小车） |
 | `extra_params.type` | 零件类型，见下表 |
 | `extra_params.number` | 固定 `1`（每次 Goal 搬 1 个） |
-| `extra_params.shelf_level` | 固定 `1`（固件暂不读取） |
+| `extra_params.box_num` | 小车前箱子：左 `0` / 右 `1` |
+| `extra_params.shelf_level` | 与 `box_num` 相同 |
 
 **零件类型 `type` 枚举：**
 
@@ -254,6 +286,9 @@ string current_params
 | `black_square` |
 | `black_joystick` |
 | `black_fan` |
+| `yellow_hinge` |
+| `white_connector` |
+| `wire_harness` |
 
 ---
 
@@ -279,25 +314,47 @@ string current_params
 
 ---
 
+### 3.5 `adjust_pose` — 中间点姿态修正
+
+**场景**：`PICK_BOX_TO_SP` 抓取完成后，导航离开取箱位、到达第一个后退/中间点时调用。同层也会发（机器人侧无需调整则相当于空操作）。`area` / `shelf_level` 与随后的 `put_down_box` 一致。
+
+```json
+{
+  "robot_task_types": { "type": 0 },
+  "task": "adjust_pose",
+  "area": "agv_car",
+  "extra_params": "{\"shelf_level\":2,\"task_only_id\":\"...\"}"
+}
+```
+
+| 参数 | 说明 |
+|---|---|
+| `area` | 与即将执行的 `put_down_box` 相同（`"agv_car"` 或 `"shelf"`） |
+| `extra_params.shelf_level` | 与 `put_down_box` 的目标层相同 |
+| `extra_params.task_only_id` | 每次下发的唯一识别码 |
+
+---
+
 ## 4. HTTP 大任务 → ROS Goal 对照
 
 ### PICK_BOX_TO_SP
 
 | 步骤 | task | area | extra_params 来源 |
 |---|---|---|---|
-| 取箱 | `pick_up_box` | `shelf_type`（`agv_car`/`shelf`） | `shelf_num[1]`（row）→ `shelf_level` |
-| 放箱 | `put_down_box` | `shelf_type`（`agv_car`/`shelf`） | `shelf_num[1]`（row）→ `shelf_level` |
+| 取箱 | `pick_up_box` 或 `pick_up_heavy_box` | `shelf_type`（重箱仅 `shelf`） | `shelf_num[1]`（row）→ `shelf_level` |
+| 离架后退中间点 | `adjust_pose` | 与放箱 area 相同 | 与放箱 `shelf_level` 相同 |
+| 放箱 | `put_down_box` 或 `put_down_heavy_box`（与取箱成对） | `shelf_type`（`agv_car`/`shelf`） | `shelf_num[1]`（row）→ `shelf_level` |
 
-前后各有一次 **导航 Action**（§5），导航点位由 `shelf_type + shelf_num[0]/[2]` 推导（如 `agv_car0_0`、`shelf0_1`）。
+前后各有一次 **导航 Action**（§5），导航点位由 `shelf_type + shelf_num[0]/[2]` 推导（如 `agv_car0_0`、`shelf0_1`）。去放箱位的导航在第一个离架中间点到达后插入 `adjust_pose`。
 
 ### PICK_COMPONENT_TO_SP
 
 | 步骤 | task | area | extra_params |
 |---|---|---|---|
-| 取件（循环） | `pick_up_component` | `component_car` | `type` + `number:1` |
+| 取件（循环） | `pick_up_component` | `component_car` | `type` + `number:1` + `box_num` |
 | 放件（循环） | `put_down_component` | 放件导航点（如 `shelf0_0`） | `shelf_level`（row）+ `type` + `number:1` |
 
-取件前导航至 HTTP `box_initial_area`（如 `"point1"`）；放件前导航至 `shelf{编号}_{column}`（来自 `box_target_area[0]/[2]`）。
+取件前导航至 HTTP `box_initial_area`（`component_car`）；`box_num` 区分左右箱。放件前导航至 `shelf{编号}_{column}`（来自 `box_target_area[0]/[2]`）。
 
 ---
 
