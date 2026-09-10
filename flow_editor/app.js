@@ -37,6 +37,7 @@
     dirty: false,             // 画布有未保存修改（切换流程/关页面前据此拦截）
     exclusiveEnabled: true,   // 本项目是否只允许一份流程激活（WRC/CONST）
     enabledById: {},          // { flowId: true/false } 下拉框「激活」标记
+    roleById: {},             // { flowId: 'entry' | 'subflow' } 子流程没有独立入口，不能激活
     zoom: 1,                  // 画布缩放比，1 = 100%
     dryrunActive: false,
     dryrunAbort: null,
@@ -142,7 +143,8 @@
       for (var i = 0; i < sel.options.length; i++) {
         var opt = sel.options[i];
         var tags = [];
-        if (state.enabledById[opt.value]) tags.push("激活");
+        if (state.roleById[opt.value] === "subflow") tags.push("子流程");
+        else if (state.enabledById[opt.value]) tags.push("激活");
         if (state.dirty && opt.value === state.flowId) tags.push("未保存");
         opt.textContent = opt.value + (tags.length ? "（" + tags.join("·") + "）" : "");
       }
@@ -157,12 +159,15 @@
     }
     var enBtn = $("#btn-flow-enabled");
     if (enBtn) {
-      var on = !!(state.flowId && (state.graph.enabled || state.enabledById[state.flowId]));
-      enBtn.disabled = !state.flowId;
+      var isSub = state.roleById[state.flowId] === "subflow";
+      var on = !isSub && !!(state.flowId && (state.graph.enabled || state.enabledById[state.flowId]));
+      enBtn.disabled = !state.flowId || isSub;
       enBtn.classList.toggle("flow-on", on);
       enBtn.classList.toggle("flow-off", !on);
-      enBtn.textContent = on ? "● 已激活" : "○ 激活";
-      enBtn.title = on
+      enBtn.textContent = isSub ? "— 子流程" : (on ? "● 已激活" : "○ 激活");
+      enBtn.title = isSub
+        ? "子流程由别的流程用「调用子流程」节点调用，没有自己的启动入口，不需要激活。"
+        : on
         ? (state.exclusiveEnabled
             ? "这条命令只会跑这份流程。再点一次关闭激活。"
             : "这份流程会响应对应的外部命令。再点一次关闭激活。")
@@ -325,12 +330,14 @@
       sel.innerHTML = "";
       state.exclusiveEnabled = !!flowsRes.exclusive_enabled;
       state.enabledById = {};
+      state.roleById = {};
       var entries = (flowsRes.flows || []).map(function (item) {
         return (typeof item === "string") ? { id: item, enabled: false } : item;
       });
       var startId = "";
       entries.forEach(function (entry) {
         state.enabledById[entry.id] = !!entry.enabled;
+        state.roleById[entry.id] = entry.role || "entry";
         var opt = document.createElement("option");
         opt.value = entry.id;
         sel.appendChild(opt);
@@ -367,35 +374,81 @@
   }
 
   function normalizeGraph(graph) {
-    return {
-      start: graph.start || null,
-      enabled: !!graph.enabled,
-      context_vars: graph.context_vars,
-      nodes: (graph.nodes || []).map(function (n, i) {
-        // 没有坐标的节点（比如手写/后端生成的流程 JSON 本来不含布局信息）按网格顺序
-        // 摆开，避免全部叠在同一个像素点上，看起来像"一个节点都没有/拖不动"。
-        var hasX = (typeof n.x === "number");
-        var hasY = (typeof n.y === "number");
-        return {
-          id: n.id, type: n.type, label: n.label || n.id,
-          params: n.params || {},
-          x: hasX ? n.x : (60 + (i % 5) * 220),
-          y: hasY ? n.y : (60 + Math.floor(i / 5) * 140),
-        };
-      }),
-      // core/flow_engine.py 的流程 JSON 规范里，边的分支字段名是 "when"
-      // （见 FLOW_ENGINE_GUIDE.md），"default" 是普通边（无分支）；编辑器内部用
-      // 更短的 "branch" 命名（null = 普通边），这里做双向映射，避免加载/保存时
-      // 分支信息丢失导致流程图"看起来不对"。
-      edges: (graph.edges || []).map(function (e, i) {
-        var when = e.when;
-        var branch = (when === undefined || when === null || when === "default") ? (e.branch || null) : when;
-        return {
-          id: e.id || ("e" + i), source: e.source, target: e.target,
-          branch: branch,
-        };
-      }),
-    };
+    // 先原样带上编辑器不直接编辑的顶层字段（id / name / description / role 等）。
+    // 不带的话，凡在编辑器里保存过一次的流程图都会丢掉这些字段——子流程的
+    // role 丢了会被后端当成可独立运行的入口，进而报"同时激活了多份流程"。
+    var normalized = {};
+    Object.keys(graph || {}).forEach(function (key) {
+      if (key !== "nodes" && key !== "edges") normalized[key] = graph[key];
+    });
+    normalized.start = graph.start || null;
+    normalized.enabled = !!graph.enabled;
+    normalized.context_vars = graph.context_vars;
+    normalized.nodes = (graph.nodes || []).map(function (n, i) {
+      // 没有坐标的节点（比如手写/后端生成的流程 JSON 本来不含布局信息）按网格顺序
+      // 摆开，避免全部叠在同一个像素点上，看起来像"一个节点都没有/拖不动"。
+      var hasX = (typeof n.x === "number");
+      var hasY = (typeof n.y === "number");
+      return {
+        id: n.id, type: n.type, label: n.label || n.id,
+        params: n.params || {},
+        x: hasX ? n.x : (60 + (i % 5) * 220),
+        y: hasY ? n.y : (60 + Math.floor(i / 5) * 140),
+      };
+    });
+    // core/flow_engine.py 的流程 JSON 规范里，边的分支字段名是 "when"
+    // （见 FLOW_ENGINE_GUIDE.md），"default" 是普通边（无分支）；编辑器内部用
+    // 更短的 "branch" 命名（null = 普通边），这里做双向映射，避免加载/保存时
+    // 分支信息丢失导致流程图"看起来不对"。
+    normalized.edges = (graph.edges || []).map(function (e, i) {
+      var when = e.when;
+      var branch = (when === undefined || when === null || when === "default") ? (e.branch || null) : when;
+      return {
+        id: e.id || ("e" + i), source: e.source, target: e.target,
+        branch: branch,
+      };
+    });
+    materializeParallelOnGraph(normalized);
+    return normalized;
+  }
+
+  function materializeParallelOnGraph(graph) {
+    if (!graph || !graph.nodes) return;
+    var nodeById = {};
+    graph.nodes.forEach(function (n) { nodeById[n.id] = n; });
+    graph.nodes.forEach(function (node) {
+      if (node.type !== "parallel") return;
+      node.params = node.params || {};
+      var listed = Array.isArray(node.params.branches) ? node.params.branches : [];
+      listed.forEach(function (tid) {
+        if (!nodeById[tid]) return;
+        var has = (graph.edges || []).some(function (e) {
+          return e.source === node.id && e.target === tid;
+        });
+        if (!has) {
+          graph.edges.push({
+            id: "e_par_" + node.id + "_" + tid,
+            source: node.id, target: tid, branch: "branch",
+          });
+        }
+      });
+      graph.edges = (graph.edges || []).filter(function (e) {
+        if (e.source !== node.id) return true;
+        return !!nodeById[e.target];
+      });
+      var ids = [];
+      graph.edges.forEach(function (e) {
+        if (e.source !== node.id) return;
+        e.branch = "branch";
+        if (ids.indexOf(e.target) < 0) ids.push(e.target);
+      });
+      node.params.branches = ids;
+      delete node.params.join;
+    });
+  }
+
+  function syncParallelBranches() {
+    materializeParallelOnGraph(state.graph);
   }
 
   function newEmptyGraph() {
@@ -670,6 +723,7 @@
     state.graph.edges = state.graph.edges.filter(function (e) { return e.source !== id && e.target !== id; });
     if (state.graph.start === id) state.graph.start = state.graph.nodes.length ? state.graph.nodes[0].id : null;
     if (state.selectedNodeId === id) state.selectedNodeId = null;
+    syncParallelBranches();
     markDirty();
     renderCanvas();
     renderInspector();
@@ -745,14 +799,22 @@
     el.appendChild(inPort);
 
     var outputs = schema.outputs && schema.outputs.length ? schema.outputs : ["out"];
+    if (node.type === "parallel") outputs = ["default"];
     outputs.forEach(function (branch, idx) {
       var outPort = document.createElement("div");
-      var branchClass = (branch === "true") ? "branch-true" : (branch === "false") ? "branch-false" : "single";
+      var branchClass = "single";
+      if (node.type === "parallel") branchClass = "branch-parallel";
+      else if (branch === "true" || branch === "success") branchClass = "branch-true";
+      else if (branch === "false" || branch === "failure") branchClass = "branch-false";
       outPort.className = "node-port port-out " + branchClass;
-      if (outputs.length > 1 && branchClass === "single") {
-        outPort.style.top = (30 + idx * 40) + "%";
+      if (outputs.length > 1) {
+        outPort.style.top = (((idx + 0.5) / outputs.length) * 100) + "%";
+        var lab = document.createElement("span");
+        lab.className = "port-label";
+        lab.textContent = branch;
+        outPort.appendChild(lab);
       }
-      outPort.title = branch;
+      outPort.title = node.type === "parallel" ? "拉出并行支路（可拉多条）" : branch;
       outPort.addEventListener("mousedown", function (e) {
         e.stopPropagation();
         startConnect(node.id, branch === "out" ? null : branch);
@@ -828,16 +890,20 @@
   // 生成一批"虚拟连线"补画出来（虚线 + 独立配色，与真实边区分）。
   function parallelBranchLinks() {
     var links = [];
+    var covered = {};
+    (state.graph.edges || []).forEach(function (e) {
+      if (e.branch === "branch") covered[e.source + "->" + e.target] = true;
+    });
     state.graph.nodes.forEach(function (node) {
       if (node.type !== "parallel") return;
       var branches = node.params ? node.params.branches : null;
       if (typeof branches === "string") {
-        // 参数面板里 json 字段解析失败时可能残留字符串，尽力再解析一次
         try { branches = JSON.parse(branches); } catch (e) { return; }
       }
       if (!branches || !branches.length) return;
-      var valid = branches.filter(function (b) { return !!findNode(b); });  // 指向不存在的节点就不画
+      var valid = branches.filter(function (b) { return !!findNode(b); });
       valid.forEach(function (targetId, i) {
+        if (covered[node.id + "->" + targetId]) return;
         links.push({
           id: "parallel:" + node.id + ":" + targetId,
           source: node.id, target: targetId,
@@ -898,8 +964,15 @@
 
     var cls = "";
     var arrow = "arrow-default";
-    if (edge.branch === "true") { cls = "branch-true"; arrow = "arrow-true"; }
-    if (edge.branch === "false") { cls = "branch-false"; arrow = "arrow-false"; }
+    var srcNode = findNode(edge.source);
+    if (srcNode && srcNode.type === "parallel") {
+      cls = "branch-parallel";
+      arrow = "arrow-parallel";
+    } else {
+      if (edge.branch === "true") { cls = "branch-true"; arrow = "arrow-true"; }
+      if (edge.branch === "false") { cls = "branch-false"; arrow = "arrow-false"; }
+      if (edge.branch === "branch") { cls = "branch-parallel"; arrow = "arrow-parallel"; }
+    }
 
     return makeEdgePath(curveBetween(x1, y1, x2, y2), edge.id, cls, arrow, function () {
       selectEdge(edge.id);
@@ -932,15 +1005,31 @@
   function finishConnect(targetId) {
     if (!connectState) return;
     if (connectState.sourceId === targetId) { connectState = null; return; }
+    var srcNode = findNode(connectState.sourceId);
+    var isParallel = srcNode && srcNode.type === "parallel";
+    if (isParallel) {
+      var dup = state.graph.edges.some(function (e) {
+        return e.source === connectState.sourceId && e.target === targetId;
+      });
+      if (dup) { connectState = null; setStatus(""); return; }
+    } else {
+      state.graph.edges = state.graph.edges.filter(function (e) {
+        return !(e.source === connectState.sourceId && e.branch === connectState.branch);
+      });
+    }
     var id = "e_" + Date.now();
-    state.graph.edges = state.graph.edges.filter(function (e) {
-      return !(e.source === connectState.sourceId && e.branch === connectState.branch);
+    state.graph.edges.push({
+      id: id,
+      source: connectState.sourceId,
+      target: targetId,
+      branch: isParallel ? "branch" : connectState.branch,
     });
-    state.graph.edges.push({ id: id, source: connectState.sourceId, target: targetId, branch: connectState.branch });
+    if (isParallel) syncParallelBranches();
     connectState = null;
     markDirty();
     setStatus("");
-    renderEdges();
+    renderCanvas();
+    renderInspector();
   }
 
   document.addEventListener("mousemove", function (e) {
@@ -1012,14 +1101,13 @@
     var edge = findEdge(edgeId);
     if (!edge) return;
     if (edge.virtual) {
-      // 并行分支不是真实的边，"删除"实际上是把目标 id 从 params.branches 里摘掉
-      var node = findNode(edge.source);
-      if (node && node.params && node.params.branches) {
-        node.params.branches = node.params.branches.filter(function (b) { return b !== edge.target; });
-      }
+      state.graph.edges = state.graph.edges.filter(function (e) {
+        return !(e.source === edge.source && e.target === edge.target);
+      });
     } else {
       state.graph.edges = state.graph.edges.filter(function (e) { return e.id !== edgeId; });
     }
+    syncParallelBranches();
     if (state.selectedEdgeId === edgeId) state.selectedEdgeId = null;
     markDirty();
     renderCanvas();
@@ -1100,6 +1188,27 @@
       body.appendChild(row);
     });
 
+    // 子流程节点：给一个直接跳进去编辑的入口。复杂功能块（比如 ConST 的装表）
+    // 就藏在子流程里，主图上只看得到一个块，没有这个按钮就得回顶部下拉里翻。
+    if (node.type === "sub_flow" && node.params.flow) {
+      var openRow = document.createElement("div");
+      openRow.className = "field-row";
+      var openBtn = document.createElement("button");
+      openBtn.className = "btn-open-subflow";
+      openBtn.textContent = "✎ 打开子流程「" + node.params.flow + "」";
+      openBtn.title = "切换到这张子流程图去编辑它的内容和顺序";
+      openBtn.addEventListener("click", function () {
+        var target = node.params.flow;
+        guardUnsaved(function () {
+          var sel = $("#flow-select");
+          if (sel) sel.value = target;
+          loadFlow(target);
+        });
+      });
+      openRow.appendChild(openBtn);
+      body.appendChild(openRow);
+    }
+
     renderNodeEdgeList(body, node);
 
     var delBtn = document.createElement("button");
@@ -1154,7 +1263,8 @@
 
       var when = document.createElement("span");
       when.className = "edge-when";
-      when.textContent = e.virtual ? "并行分支" : (e.branch || "default");
+      var srcN = findNode(e.source);
+      when.textContent = (e.virtual || (srcN && srcN.type === "parallel")) ? "并行支路" : (e.branch || "default");
       row.appendChild(when);
 
       var viewBtn = document.createElement("button");
@@ -1178,23 +1288,24 @@
       return;
     }
 
+    var srcNode = findNode(edge.source);
+    var isParallelLine = edge.virtual || (srcNode && srcNode.type === "parallel");
+
     var title = document.createElement("div");
     title.className = "palette-category";
-    title.textContent = edge.virtual ? "并行分支连线" : "连线";
+    title.textContent = isParallelLine ? "并行支路" : "连线";
     body.appendChild(title);
 
     body.appendChild(makeField("string", "起点节点", nodeTitleOf(edge.source), true, function () {}));
     body.appendChild(makeField("string", "终点节点", nodeTitleOf(edge.target), true, function () {}));
 
-    if (edge.virtual) {
+    if (isParallelLine) {
       var note = document.createElement("p");
       note.className = "hint";
-      note.textContent =
-        "这条线来自 parallel 节点的 params.branches（并行分支起点列表），" +
-        "不是普通连线。删除它等同于把该节点从 branches 数组里移除。";
+      note.textContent = "从并行节点拉出的线就是一条独立线程。删除这条线即撤销该支路。";
       body.appendChild(note);
     } else {
-      var outputs = nodeSchema(findNode(edge.source) || { type: "" }).outputs;
+      var outputs = nodeSchema(srcNode || { type: "" }).outputs;
       outputs = (outputs && outputs.length) ? outputs : ["default"];
       body.appendChild(makeField("select", "分支（when）", edge.branch || outputs[0], false, function (v) {
         var next = (v === "default" || v === "out") ? null : v;
@@ -1215,7 +1326,7 @@
 
     var delBtn = document.createElement("button");
     delBtn.className = "btn-delete";
-    delBtn.textContent = edge.virtual ? "🗑 从 branches 中移除" : "🗑 删除这条连线";
+    delBtn.textContent = "🗑 删除这条连线";
     delBtn.addEventListener("click", function () { deleteEdge(edge.id); });
     body.appendChild(delBtn);
   }
@@ -1307,17 +1418,22 @@
   // ── 7. 工具栏动作：保存 / 校验 / 演练 ───────────────────────────────────
 
   function currentGraphPayload() {
-    var payload = {
-      start: state.graph.start,
-      enabled: !!state.graph.enabled,
-      nodes: state.graph.nodes.map(function (n) {
-        return { id: n.id, type: n.type, label: n.label, params: n.params, x: n.x, y: n.y };
-      }),
-      edges: state.graph.edges.map(function (e) {
-        return { id: e.id, source: e.source, target: e.target, when: e.branch || "default" };
-      }),
-    };
-    if (state.graph.context_vars) payload.context_vars = state.graph.context_vars;
+    syncParallelBranches();
+    // 同 normalizeGraph：先透传编辑器不直接编辑的顶层字段（id / name / description / role），
+    // 只重建自己管的那几项。否则保存一次就把这些字段抹掉了。
+    var payload = {};
+    Object.keys(state.graph).forEach(function (key) {
+      if (key !== "nodes" && key !== "edges") payload[key] = state.graph[key];
+    });
+    payload.start = state.graph.start;
+    payload.enabled = !!state.graph.enabled;
+    payload.nodes = state.graph.nodes.map(function (n) {
+      return { id: n.id, type: n.type, label: n.label, params: n.params, x: n.x, y: n.y };
+    });
+    payload.edges = state.graph.edges.map(function (e) {
+      return { id: e.id, source: e.source, target: e.target, when: e.branch || "default" };
+    });
+    if (!state.graph.context_vars) delete payload.context_vars;
     return payload;
   }
 
@@ -1647,6 +1763,7 @@
     return api(projectBase() + "/flows").then(function (flowsRes) {
       state.exclusiveEnabled = !!flowsRes.exclusive_enabled;
       state.enabledById = {};
+      state.roleById = {};
       var sel = $("#sel-flow");
       sel.innerHTML = "";
       var entries = (flowsRes.flows || []).map(function (item) {
@@ -1656,6 +1773,7 @@
       var preferOk = false;
       entries.forEach(function (entry) {
         state.enabledById[entry.id] = !!entry.enabled;
+        state.roleById[entry.id] = entry.role || "entry";
         var opt = document.createElement("option");
         opt.value = entry.id;
         sel.appendChild(opt);
@@ -2150,7 +2268,7 @@
     var btnConfig = document.createElement("button");
     btnConfig.className = "run-head-toggle";
     btnConfig.textContent = "配置文件";
-    btnConfig.title = "编辑当前项目的 robot_config.json（机器人 IP、端口等）。保存后需重置系统或重启 main.py 才生效。";
+    btnConfig.title = "编辑当前项目配置：KAIAO 走廊导航中间点（带字段注释）以及 robot_config.json。保存后需重置系统或重启 main.py 才生效。";
     btnConfig.addEventListener("click", openRobotConfigEditor);
     head.appendChild(btnConfig);
     var btnToggleConsole = document.createElement("button");
@@ -2360,6 +2478,104 @@
     };
   }
 
+  function stringifyWaypointValue(field, value) {
+    if (field.type === "string_list") {
+      return (Array.isArray(value) ? value : []).join(", ");
+    }
+    if (field.type === "json") {
+      try { return JSON.stringify(value); } catch (e) { return "[]"; }
+    }
+    if (value === undefined || value === null) return "";
+    return String(value);
+  }
+
+  function collectWaypointForm(form) {
+    var out = {};
+    var errors = [];
+    if (!form) return { values: null, errors: errors };
+    (form._wpFields || []).forEach(function (field) {
+      var el = form.querySelector('[data-wp-key="' + field.key + '"]');
+      if (!el) return;
+      var raw = el.value;
+      try {
+        if (field.type === "number") {
+          var n = Number(String(raw).trim());
+          if (!isFinite(n)) throw new Error("必须是数字");
+          out[field.key] = n;
+        } else if (field.type === "string_list") {
+          var list = String(raw).split(/[,，\n]+/).map(function (s) {
+            return s.trim();
+          }).filter(Boolean);
+          if (!list.length) throw new Error("至少填一个点位名");
+          out[field.key] = list;
+        } else if (field.type === "json") {
+          var parsed = JSON.parse(String(raw).trim() || "[]");
+          if (!Array.isArray(parsed)) throw new Error("必须是 JSON 数组");
+          out[field.key] = parsed;
+        } else {
+          out[field.key] = raw;
+        }
+      } catch (e) {
+        errors.push((field.label || field.key) + ": " + (e.message || e));
+      }
+    });
+    return { values: out, errors: errors };
+  }
+
+  function buildWaypointForm(wp) {
+    var wrap = document.createElement("div");
+    wrap.className = "wp-config";
+    wrap._wpFields = wp.schema || [];
+
+    var title = document.createElement("div");
+    title.className = "palette-category";
+    title.textContent = "走廊导航中间点（kaiao_waypoint）";
+    wrap.appendChild(title);
+
+    var intro = document.createElement("p");
+    intro.className = "hint";
+    intro.textContent = (wp.intro || "") + (wp.path ? " 写入：" + wp.path : "");
+    wrap.appendChild(intro);
+
+    var lastGroup = "";
+    (wp.schema || []).forEach(function (field) {
+      if (field.group && field.group !== lastGroup) {
+        lastGroup = field.group;
+        var g = document.createElement("div");
+        g.className = "wp-group-title";
+        g.textContent = field.group;
+        wrap.appendChild(g);
+      }
+      var row = document.createElement("div");
+      row.className = "wp-field";
+      var lab = document.createElement("label");
+      lab.textContent = field.label || field.key;
+      var input;
+      if (field.type === "json") {
+        input = document.createElement("textarea");
+        input.rows = 2;
+        input.className = "wp-json";
+        input.spellcheck = false;
+      } else {
+        input = document.createElement("input");
+        input.type = field.type === "number" ? "number" : "text";
+        if (field.type === "number") input.step = "any";
+      }
+      input.setAttribute("data-wp-key", field.key);
+      input.value = stringifyWaypointValue(field, (wp.values || {})[field.key]);
+      lab.appendChild(input);
+      row.appendChild(lab);
+      if (field.comment) {
+        var cmt = document.createElement("p");
+        cmt.className = "wp-comment";
+        cmt.textContent = field.comment;
+        row.appendChild(cmt);
+      }
+      wrap.appendChild(row);
+    });
+    return wrap;
+  }
+
   function openRobotConfigEditor() {
     var content = document.createElement("div");
     var pathLine = document.createElement("p");
@@ -2372,6 +2588,14 @@
     hint.textContent = "保存后正在运行的 main.py 不会立刻生效，需要「重置系统」或重启主程序。";
     content.appendChild(hint);
 
+    var wpHost = document.createElement("div");
+    content.appendChild(wpHost);
+
+    var jsonTitle = document.createElement("div");
+    jsonTitle.className = "palette-category";
+    jsonTitle.textContent = "项目配置 JSON";
+    content.appendChild(jsonTitle);
+
     var ta = document.createElement("textarea");
     ta.className = "run-config-editor";
     ta.spellcheck = false;
@@ -2382,8 +2606,10 @@
     errBox.className = "pose-errors";
     content.appendChild(errBox);
 
+    var wpForm = null;
+
     showModal({
-      title: "robot_config.json",
+      title: "配置文件",
       wide: true,
       className: "config-modal",
       content: content,
@@ -2403,14 +2629,27 @@
               errBox.textContent = "配置必须是 JSON 对象";
               return;
             }
+            var payload = { config: cfg };
+            if (wpForm) {
+              var got = collectWaypointForm(wpForm);
+              if (got.errors.length) {
+                errBox.textContent = got.errors.join("；");
+                return;
+              }
+              payload.waypoint = got.values;
+            }
             errBox.textContent = "";
-            api(projectBase() + "/robot-config", "POST", { config: cfg }).then(function (res) {
+            api(projectBase() + "/robot-config", "POST", payload).then(function (res) {
               if (!res.success) {
-                errBox.textContent = res.message || "保存失败";
+                errBox.textContent = (res.message || "保存失败") +
+                  (res.errors && res.errors.length ? " " + res.errors.join("；") : "");
                 return;
               }
               close();
               log("配置已保存 -> " + res.path, "success");
+              if (res.waypoint_path && res.waypoint_path !== res.path) {
+                log("走廊导航参数 -> " + res.waypoint_path, "success");
+              }
               log(res.message, "info");
               setStatus("配置已保存", "ok");
             }).catch(function (e) {
@@ -2427,8 +2666,16 @@
         pathLine.textContent = "✗ " + (res.message || "读取失败");
         return;
       }
+      var cfgObj = res.config || {};
+      if (res.waypoint && res.waypoint.key) {
+        cfgObj = Object.assign({}, cfgObj);
+        delete cfgObj[res.waypoint.key];
+        wpForm = buildWaypointForm(res.waypoint);
+        wpHost.appendChild(wpForm);
+        ta.classList.add("has-waypoint");
+      }
       pathLine.textContent = (res.exists === false ? "文件尚不存在，保存时将创建：" : "当前文件：") + res.path;
-      ta.value = formatConfigForEditor(res.config || {}, res.text);
+      ta.value = formatConfigForEditor(cfgObj, res.text);
     }).catch(function (e) {
       pathLine.textContent = "✗ 读取异常: " + e.message;
     });

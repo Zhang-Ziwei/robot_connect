@@ -1,4 +1,7 @@
 {
+  "id": "const_main",
+  "name": "ConST 检定主循环",
+  "description": "康斯特压力表全自动检定的主流程：连 MQTT 发现检定系统 → 搬料箱 → 逐个工位装表（装表细节在子流程 const_install_station 里）→ 请求启动检定 → 按检定结果重装或拆表 → 下料。这是本项目唯一的入口流程，PROCESS_BEGINS 跑的就是它。",
   "start": "n_mqtt",
   "enabled": true,
   "nodes": [
@@ -138,12 +141,10 @@
     },
     {
       "id": "n_install",
-      "type": "const_install_station",
+      "type": "sub_flow",
       "label": "装表并等识别/检漏",
       "params": {
-        "station_seq": "{{station_seq}}",
-        "station_pose": "{{station_pose}}",
-        "timeout": 1200
+        "flow": "const_install_station"
       },
       "x": 640,
       "y": 420

@@ -12,11 +12,19 @@
         "dryrun_params": {
           "robot_id": "robot_a",
           "box_initial_area": {
-            "shelf_num": [0, 1, 2],
+            "shelf_num": [
+              0,
+              1,
+              2
+            ],
             "shelf_type": "shelf"
           },
           "box_target_area": {
-            "shelf_num": [0, 1, 0],
+            "shelf_num": [
+              0,
+              1,
+              0
+            ],
             "shelf_type": "agv_car"
           }
         }

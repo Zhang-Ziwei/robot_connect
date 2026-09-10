@@ -18,6 +18,8 @@ from typing import Callable, Dict, Tuple
 from core.task_state_machine import ParallelTaskStateMachine
 from hardware.robot_controller import RobotController
 from programs.WRC_FLOW.node_handlers import build_handler_registry
+from core.flow_store import load_flow as _store_load_flow
+from programs.WRC_FLOW.WRC_FLOW import _LOCAL_FLOWS_DIR, _EXTERNAL_FLOWS_DIR
 
 # mock_rosbridge_server.py 默认端口映射（见 mock_rosbridge/mock_rosbridge_server.py DEFAULT_ROBOTS）
 MOCK_ROBOTS: Dict[str, Tuple[str, int]] = {
@@ -100,3 +102,13 @@ def build_dryrun_engine_inputs(signal_bus, stop_event: threading.Event, signals=
 
     auto_fire_thread = threading.Thread(target=_auto_fire_loop, daemon=True, name="WRC_FLOW-dryrun-autofire")
     return handlers, robots, task_state_machine, auto_fire_thread
+
+def load_flow(flow_id):
+    """
+    演练时加载流程图。
+
+    flow_api_server 演练建引擎时会取本模块的 load_flow 当 flow_loader；
+    缺了它，图里一旦用「调用子流程」节点，演练就会以"未提供 flow_loader"失败，
+    而真机跑得好好的——这种只在演练里出现的差异很难查，所以这里补齐。
+    """
+    return _store_load_flow(flow_id, _LOCAL_FLOWS_DIR, _EXTERNAL_FLOWS_DIR)

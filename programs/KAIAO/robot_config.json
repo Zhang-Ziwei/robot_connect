@@ -86,7 +86,24 @@
         "retry_interval": 10
     },
     "kaiao_waypoint": {
-        "_comment": "狭长走廊中间过渡点。end_yaw_half_width_deg：端点(±y)相对货架(±x)判定半宽，默认45°（旧10°易误判）。end_to_side/side_to_end：平移+旋转；side_to_side_same_retreat_dx：同侧货架先后退再对齐目标y；side_to_side_mid_1/2：异侧货架撤退点。",
+        "_comment": "狭长走廊自动插入中间过渡点。走廊沿 Y：agv_car 在 −Y 端，零件车在 +Y 端；两侧货架朝 ±X。图形化编辑器「运行控制 → 配置文件」里按字段注释修改；改完后 RESET_SYSTEM 或重启 main.py。KAIAO 与 KAIAO_FLOW 共用本段。",
+        "_comments": {
+            "angle_threshold_deg": "起点与终点偏航角差超过该值才插入中间点。货架（±X）与走廊端点（±Y）通常差约 90°。",
+            "end_yaw_half_width_deg": "相对 ±Y 轴左右各这么多度算走廊端点（agv_car / component_car）；其余算货架。过窄会把端点误判成货架。",
+            "pose_match_radius": "判断当前位姿是否靠近某个配置点位的距离阈值（米）。应小于相邻货架格间距。",
+            "angle_offset_deg": "货架与 agv_car / 零件车之间，平移到位后的原地旋转角，一般 90°。",
+            "end_to_side_dx": "从端点去货架时中间平移点的 X 偏移（米）。",
+            "end_to_side_dy": "从端点去货架时中间平移点的 Y 偏移（米），通常为 0。",
+            "side_to_end_dx": "普通货架去端点时先沿 X 平移的距离（米）。近 AGV 格持箱去 agv_car 不走这条。",
+            "side_to_end_dy": "普通货架去端点的 Y 偏移，通常为 0。",
+            "side_to_side_same_retreat_dx": "沿朝向反方向退入走廊的距离。货架互搬以及近 AGV 持箱去 agv_car 的第一步。adjust_pose 在此后执行。",
+            "side_to_side_approach_dx": "有箱货架互搬：走到目标点沿朝向后退这么多（目标格正前方），再转向进入。空手互搬不用。",
+            "side_to_end_agv_clear_dy": "近 AGV 格持箱去 agv_car：后退并校正后，沿走廊远离 AGV 再平移这么多，然后才转 90°，避免箱子撞货架。",
+            "side_to_end_agv_clear_from": "需避让的起点货架格点位名，对应 (0,*,3)/(1,*,3)。",
+            "side_to_end_agv_clear_to": "避让场景的终点，通常只有 agv_car0_0。",
+            "side_to_side_mid_1": "旧版异侧货架撤退点（靠近 AGV）。当前主路径已改为后退+转向零件车。",
+            "side_to_side_mid_2": "旧版异侧货架撤退点（靠近零件车）。"
+        },
         "angle_threshold_deg": 45.0,
         "end_yaw_half_width_deg": 45.0,
         "angle_offset_deg": 90.0,
@@ -94,7 +111,12 @@
         "end_to_side_dy": 0.0,
         "side_to_end_dx": 0.4,
         "side_to_end_dy": 0.0,
+        "side_to_end_agv_clear_dy": 0.4,
+        "side_to_end_agv_clear_from": ["shelf0_3", "shelf1_3"],
+        "side_to_end_agv_clear_to": ["agv_car0_0"],
+        "pose_match_radius": 0.28,
         "side_to_side_same_retreat_dx": 0.3,
+        "side_to_side_approach_dx": 0.4,
         "side_to_side_mid_1": [
             [
                 -0.58,

@@ -22,7 +22,7 @@
         "require_process_begins": false
     },
     "mqtt": {
-        "host": "192.168.120.32",
+        "host": "172.16.8.189",
         "port": 8870,
         "username": "robot",
         "password": "ConST123456",
@@ -43,7 +43,11 @@
         "port": 502,
         "unit_id": 1,
         "ready_holding_registers": [
-            {"address": 0, "ready_value": 1, "name": "device_1"}
+            {
+                "address": 0,
+                "ready_value": 1,
+                "name": "device_1"
+            }
         ]
     },
     "robot_connection": {
@@ -61,14 +65,15 @@
     "navigation_poses": {
         "_comment": "格式：[[x,y,z,qx,qy,qz,qw], ...]。工位名 station_<检定系统 sequenceNumber>。",
         "CONST_FLOW": {
+            "box_wait": [[0, 0, 0, 0, 0, 0, 1]],
             "home": [[0, 0, 0, 0, 0, 0, 1]],
             "inbound_shelf": [[0, 0, 0, 0, 0, 0, 1]],
             "outbound_shelf": [[0, 0, 0, 0, 0, 0, 1]],
-            "box_wait": [[0, 0, 0, 0, 0, 0, 1]],
             "station_1": [[0, 0, 0, 0, 0, 0, 1]],
             "station_2": [[0, 0, 0, 0, 0, 0, 1]],
             "station_3": [[0, 0, 0, 0, 0, 0, 1]],
-            "station_4": [[0, 0, 0, 0, 0, 0, 1]]
+            "station_4": [[0, 0, 0, 0, 0, 0, 1]],
+            "station_0": [[0, 0, 0, 0, 0, 0, 1]]
         }
     }
 }

@@ -53,8 +53,9 @@ class ErrorLogger:
                     f.write("异常详情:\n")
                     f.write(traceback.format_exc())
                     f.write("\n")
-                
-                f.write("-"*80 + "\n")
+
+                if level in ("ERROR", "WARNING"):
+                    f.write("-"*80 + "\n")
                 f.flush()
                 os.fsync(f.fileno())
         except Exception as e:

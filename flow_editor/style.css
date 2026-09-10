@@ -244,6 +244,7 @@ select, input[type="text"], input[type="number"], textarea {
 .node-port.port-out { right: -8px; }
 .node-port.port-out.branch-true { background: var(--success); }
 .node-port.port-out.branch-false { background: var(--failure); }
+.node-port.port-out.branch-parallel { background: var(--parallel); }
 .node-port .port-label {
   position: absolute; right: 18px; top: -3px; font-size: 10px; color: var(--text-dim);
   white-space: nowrap;
@@ -270,6 +271,12 @@ select, input[type="text"], input[type="number"], textarea {
   margin-top: 10px; width: 100%; background: #6b2b2f; border-color: #a33; color: #fff;
 }
 .btn-delete:hover { border-color: var(--failure); }
+
+/* 子流程节点上的跳转按钮：复杂功能块藏在子流程里，这是进去编辑的入口 */
+.btn-open-subflow {
+  width: 100%; background: #24405c; border-color: #3d6a94; color: #cfe6ff;
+}
+.btn-open-subflow:hover { border-color: #6ab0ff; }
 
 .edge-row {
   display: flex; align-items: center; gap: 4px; font-size: 12px;
@@ -380,7 +387,7 @@ option.opt-template { color: var(--text-dim); }
 .run-mock-switch input:checked + .run-switch-ui::after { transform: translateX(16px); }
 .run-mock-switch input:disabled + .run-switch-ui { opacity: .5; }
 .run-mock-label { color: var(--text-dim); min-width: 3.2em; }
-.modal-box.config-modal { min-width: 640px; max-width: min(80vw, 860px); }
+.modal-box.config-modal { min-width: 720px; max-width: min(92vw, 980px); }
 .run-config-path {
   margin: 0 0 8px !important; font-size: 12px !important;
   color: var(--text-dim) !important; word-break: break-all; line-height: 1.45 !important;
@@ -389,6 +396,30 @@ option.opt-template { color: var(--text-dim); }
   width: 100%; min-height: 52vh; font-family: ui-monospace, monospace;
   font-size: 12px; line-height: 1.45; resize: vertical; margin: 0 0 8px;
   white-space: pre; overflow-x: auto;
+}
+.run-config-editor.has-waypoint { min-height: 26vh; }
+.wp-config { margin: 0 0 16px; }
+.wp-group-title {
+  margin: 14px 0 8px; font-size: 12px; font-weight: 700;
+  color: var(--accent, #4c8dff); letter-spacing: .02em;
+}
+.wp-field {
+  margin: 0 0 10px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: rgba(76, 141, 255, .04);
+}
+.wp-field label {
+  display: flex; flex-direction: column; gap: 4px;
+  margin: 0; font-size: 13px; font-weight: 600; color: var(--text);
+}
+.wp-field input, .wp-field textarea.wp-json {
+  width: 100%; box-sizing: border-box; font-weight: 400;
+  font-family: ui-monospace, monospace; font-size: 12px;
+}
+.wp-field textarea.wp-json { resize: vertical; min-height: 2.6em; }
+.wp-comment {
+  margin: 6px 0 0 !important; font-size: 12px !important;
+  color: var(--text-dim) !important; line-height: 1.55 !important;
 }
 .run-hint-line {
   margin: 0 !important; font-size: 12px !important; color: var(--text-dim) !important;

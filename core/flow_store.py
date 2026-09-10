@@ -92,12 +92,31 @@ def is_enabled(graph: Optional[Dict[str, Any]]) -> bool:
     return bool(graph.get("enabled"))
 
 
+def is_subflow(graph: Optional[Dict[str, Any]]) -> bool:
+    """
+    这张图是子流程（只被别的图用 sub_flow 节点调用），而不是可以独立跑的入口。
+
+    子流程不参与"现场只能激活一份"的判断：它没有自己的启动入口，
+    激活开关对它没有意义。不排除的话会踩两个坑——新建的子流程如果忘了写
+    ``enabled: false``，``is_enabled`` 会按兼容旧图的规则视为激活；
+    或者有人在编辑器里顺手开了子流程的激活开关，两种都会让主流程报
+    "同时激活了多份流程"而跑不起来。
+    """
+    return isinstance(graph, dict) and graph.get("role") == "subflow"
+
+
 def list_flow_summaries(local_dir: str,
                         external_dir: str = EXTERNAL_FLOWS_DIR) -> List[Dict[str, Any]]:
     rows = []
     for flow_id in list_flow_ids(local_dir, external_dir):
         graph = load_flow(flow_id, local_dir, external_dir) or {}
-        rows.append({"id": flow_id, "enabled": is_enabled(graph)})
+        sub = is_subflow(graph)
+        rows.append({
+            "id": flow_id,
+            # 子流程不是入口，一律按未激活上报，编辑器据此禁掉它的激活开关
+            "enabled": False if sub else is_enabled(graph),
+            "role": "subflow" if sub else "entry",
+        })
     return rows
 
 
@@ -106,6 +125,8 @@ def find_enabled_flows(local_dir: str,
     found: List[Tuple[str, Dict[str, Any]]] = []
     for flow_id in list_flow_ids(local_dir, external_dir):
         graph = load_flow(flow_id, local_dir, external_dir)
+        if is_subflow(graph):
+            continue
         if is_enabled(graph):
             found.append((flow_id, graph))  # type: ignore[arg-type]
     return found

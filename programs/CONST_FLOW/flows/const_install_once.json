@@ -1,0 +1,231 @@
+{
+  "id": "const_install_once",
+  "name": "装一次表（让位→装表→合龙→等识别）",
+  "description": "一次装表尝试的完整步骤：上报状态 → 通知上位机取表信息 → 让位 → 等龙门架 → 机器人装表 → 合龙 → 等识别/检漏。机器人动作走通用的「发送操作动作」，上位机往来走 ConST 专有的 MQTT 节点。结果写入 install_result：ok=装表并检漏通过，human=需要人工，retry=可以重插。",
+  "role": "subflow",
+  "enabled": false,
+  "start": "set_live_install",
+  "context_vars": {},
+  "nodes": [
+    {
+      "id": "set_live_install",
+      "type": "const_set_live",
+      "label": "上报状态：装表",
+      "params": {
+        "status": "装表",
+        "station_seq": "{{station_seq}}"
+      },
+      "x": 60,
+      "y": 240
+    },
+    {
+      "id": "take_dut",
+      "type": "const_take_dutinfo",
+      "label": "通知上位机取表信息",
+      "params": {},
+      "x": 270,
+      "y": 240
+    },
+    {
+      "id": "calsys_free",
+      "type": "const_calsys_install",
+      "label": "上位机让位",
+      "params": {
+        "action": "0"
+      },
+      "x": 480,
+      "y": 240
+    },
+    {
+      "id": "wait_gantry",
+      "type": "delay",
+      "label": "等龙门架让开",
+      "params": {
+        "seconds": 3
+      },
+      "x": 690,
+      "y": 240
+    },
+    {
+      "id": "do_install",
+      "type": "send_operation",
+      "label": "机器人装表",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "install_gauge",
+        "area": "{{station_pose}}",
+        "extra_params": {},
+        "timeout": 1200
+      },
+      "x": 900,
+      "y": 240
+    },
+    {
+      "id": "chk_dropped",
+      "type": "condition",
+      "label": "表掉了吗？",
+      "params": {
+        "var": "gauge_dropped",
+        "op": "truthy",
+        "value": ""
+      },
+      "x": 1110,
+      "y": 240
+    },
+    {
+      "id": "calsys_close",
+      "type": "const_calsys_install",
+      "label": "上位机合龙",
+      "params": {
+        "action": "1"
+      },
+      "x": 1320,
+      "y": 160
+    },
+    {
+      "id": "set_live_wait",
+      "type": "const_set_live",
+      "label": "上报状态：等检定系统",
+      "params": {
+        "status": "等待检定系统回复",
+        "station_seq": "{{station_seq}}"
+      },
+      "x": 1530,
+      "y": 160
+    },
+    {
+      "id": "wait_id",
+      "type": "const_wait_identify",
+      "label": "等识别/检漏结果",
+      "params": {},
+      "x": 1740,
+      "y": 160
+    },
+    {
+      "id": "r_ok",
+      "type": "set_variable",
+      "label": "结果：通过",
+      "params": {
+        "var": "install_result",
+        "op": "set",
+        "value": "ok"
+      },
+      "x": 1950,
+      "y": 80
+    },
+    {
+      "id": "r_retry",
+      "type": "set_variable",
+      "label": "结果：可重插",
+      "params": {
+        "var": "install_result",
+        "op": "set",
+        "value": "retry"
+      },
+      "x": 1950,
+      "y": 300
+    },
+    {
+      "id": "r_human",
+      "type": "set_variable",
+      "label": "结果：需要人工",
+      "params": {
+        "var": "install_result",
+        "op": "set",
+        "value": "human"
+      },
+      "x": 1950,
+      "y": 430
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "set_live_install",
+      "target": "take_dut"
+    },
+    {
+      "id": "e2",
+      "source": "take_dut",
+      "target": "calsys_free",
+      "when": "success"
+    },
+    {
+      "id": "e3",
+      "source": "calsys_free",
+      "target": "wait_gantry",
+      "when": "success"
+    },
+    {
+      "id": "e4",
+      "source": "wait_gantry",
+      "target": "do_install"
+    },
+    {
+      "id": "e5",
+      "source": "do_install",
+      "target": "chk_dropped",
+      "when": "success"
+    },
+    {
+      "id": "e6",
+      "source": "chk_dropped",
+      "target": "calsys_close",
+      "when": "false"
+    },
+    {
+      "id": "e7",
+      "source": "calsys_close",
+      "target": "set_live_wait",
+      "when": "success"
+    },
+    {
+      "id": "e8",
+      "source": "set_live_wait",
+      "target": "wait_id"
+    },
+    {
+      "id": "e9",
+      "source": "wait_id",
+      "target": "r_ok",
+      "when": "success"
+    },
+    {
+      "id": "e10",
+      "source": "wait_id",
+      "target": "r_retry",
+      "when": "failure"
+    },
+    {
+      "id": "e11",
+      "source": "do_install",
+      "target": "r_retry",
+      "when": "failure"
+    },
+    {
+      "id": "e12",
+      "source": "chk_dropped",
+      "target": "r_human",
+      "when": "true"
+    },
+    {
+      "id": "e13",
+      "source": "take_dut",
+      "target": "r_human",
+      "when": "failure"
+    },
+    {
+      "id": "e14",
+      "source": "calsys_free",
+      "target": "r_human",
+      "when": "failure"
+    },
+    {
+      "id": "e15",
+      "source": "calsys_close",
+      "target": "r_human",
+      "when": "failure"
+    }
+  ]
+}

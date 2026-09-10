@@ -101,6 +101,7 @@ class RobotController:
         self._nav_map_ready_event = threading.Event()  # set 后表示一次 set_navigation_map 流程已结束
         self._nav_map_ready_success = False             # 最近一次下发是否成功
         self._nav_map_ready_message = ""                # 最近一次下发的消息
+        self._last_reconnect_error = ""
     
     def _get_address_str(self):
         """获取地址字符串（用于显示）"""
@@ -412,33 +413,8 @@ class RobotController:
         # 3. 尝试 WebSocket 连接
         print(f"正在建立 WebSocket 连接...")
         try:
-            uri = self._get_uri()
-            print(f"WebSocket URI: {uri}")
-            
-            # 从配置加载连接参数
-            conn_config = _get_connection_config()
-            
-            # 尝试带 rosbridge 协议
-            try:
-                self.websocket = await websockets.connect(
-                    uri,
-                    subprotocols=['rosbridge_v2'],
-                    ping_interval=conn_config["ping_interval"],
-                    ping_timeout=conn_config["ping_timeout"],
-                    close_timeout=10
-                )
-                print(f"✓ WebSocket 连接成功 (使用 rosbridge_v2 协议)")
-            except Exception as e1:
-                # 如果 rosbridge 协议失败，尝试不带协议
-                print(f"rosbridge_v2 协议失败，尝试标准 WebSocket...")
-                self.websocket = await websockets.connect(
-                    uri,
-                    ping_interval=conn_config["ping_interval"],
-                    ping_timeout=conn_config["ping_timeout"],
-                    close_timeout=10
-                )
-                print(f"✓ WebSocket 连接成功 (标准协议)")
-            
+            print(f"WebSocket URI: {self._get_uri()}")
+            self.websocket = await self._open_websocket()
             self.connected = True
             print(f"✓ {self.robot_name} 已成功连接到 {self._get_address_str()}")
             
@@ -1093,8 +1069,16 @@ class RobotController:
                         f"监听器重连失败，已重试 {max_reconnect_attempts} 次"
                     )
                     break
-                
-                print(f"⚠ {self.robot_name} 连接异常 ({e})，{reconnect_interval}秒后尝试重连 [{reconnect_attempts}/{max_reconnect_attempts or '∞'}]...")
+
+                # 前 3 次详细打，之后大约每分钟一条，避免 mock HTTP 400 时刷屏
+                log_this = reconnect_attempts <= 3 or reconnect_attempts % 12 == 0
+                cap = max_reconnect_attempts or "∞"
+                if log_this:
+                    omitted = "" if reconnect_attempts <= 3 else "，同类失败已省略"
+                    print(
+                        f"⚠ {self.robot_name} 连接异常 ({e})，"
+                        f"{reconnect_interval}秒后尝试重连 [{reconnect_attempts}/{cap}]{omitted}"
+                    )
                 
                 self.connected = False
                 
@@ -1115,13 +1099,39 @@ class RobotController:
                     await self._resubscribe_topics()
                     # 重连后重新下发导航地图
                     self._schedule_auto_set_navigation_map()
-                else:
-                    print(f"✗ {self.robot_name} 监听器重连失败，继续重试...")
+                elif log_this:
+                    err = getattr(self, "_last_reconnect_error", "") or "未知原因"
+                    print(f"✗ {self.robot_name} 监听器重连失败: {err}")
         
         print(f"[DEBUG] {self.robot_name} 统一消息监听器已停止")
         self._topic_listener_started = False
         self._listener_ready = False
     
+    async def _open_websocket(self, quiet: bool = False):
+        """
+        建立 WebSocket。必须先带 rosbridge_v2：mock_rosbridge 要求该子协议，
+        缺了会被 websockets 服务端直接 HTTP 400 拒掉。
+        """
+        uri = self._get_uri()
+        conn_config = _get_connection_config()
+        kwargs = {
+            "ping_interval": conn_config["ping_interval"],
+            "ping_timeout": conn_config["ping_timeout"],
+            "close_timeout": 10,
+        }
+        try:
+            ws = await websockets.connect(uri, subprotocols=["rosbridge_v2"], **kwargs)
+            if not quiet:
+                print("✓ WebSocket 连接成功 (使用 rosbridge_v2 协议)")
+            return ws
+        except Exception:
+            if not quiet:
+                print("rosbridge_v2 协议失败，尝试标准 WebSocket...")
+            ws = await websockets.connect(uri, **kwargs)
+            if not quiet:
+                print("✓ WebSocket 连接成功 (标准协议)")
+            return ws
+
     async def _async_reconnect(self) -> bool:
         """
         异步重新连接WebSocket
@@ -1132,32 +1142,17 @@ class RobotController:
         if self._stop_reconnect:
             return False
         try:
-            uri = self._get_uri()
-            print(f"[DEBUG] {self.robot_name} 尝试重连到 {uri}...")
-            
-            # 关闭旧连接
             if self.websocket:
                 try:
                     await self.websocket.close()
-                except:
+                except Exception:
                     pass
-            
-            # 从配置加载连接参数
-            conn_config = _get_connection_config()
-            
-            # 建立新连接
-            self.websocket = await websockets.connect(
-                uri,
-                ping_interval=conn_config["ping_interval"],
-                ping_timeout=conn_config["ping_timeout"],
-                close_timeout=10
-            )
+            self.websocket = await self._open_websocket(quiet=True)
             self.connected = True
-            print(f"✓ {self.robot_name} WebSocket重连成功")
+            self._last_reconnect_error = ""
             return True
-            
         except Exception as e:
-            print(f"✗ {self.robot_name} WebSocket重连失败: {e}")
+            self._last_reconnect_error = str(e)
             self.connected = False
             return False
     

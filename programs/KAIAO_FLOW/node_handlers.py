@@ -177,9 +177,9 @@ def build_handler_registry(kaiao: KAIAOHandler) -> Dict[str, Callable[[FlowNode,
         走廊场景的判定（KAIAO.py::_prepend_intermediate_waypoint）完全依赖**调用那一刻**
         的实时里程计。如果先退离货架再进导航，导航读到的是"已经退到走廊里"的位姿：
 
-          - 同侧货架且手上有箱时会落进 side_to_side_same 分支，该分支用
-            ``retreat_x = src_x - cos(yaw) * retreat`` 再插一个后退中间点，
-            于是机器人**一共后退两次**（0.3m + 0.3m）；
+          - 货架互搬且手上有箱时会落进 side_to_side_carry 分支，该分支用
+            朝向反方向后退进入走廊，再转向零件车；
+          - 货架互搬且手上无箱时会落进 side_to_side_empty，同样先插一个后退点；
           - 其余场景的中间点坐标也会整体偏移一个后退距离。
 
         挂进导航后，中间点算法看到的始终是"还贴着货架"的原始位姿，校正则发生在

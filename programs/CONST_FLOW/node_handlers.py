@@ -1,24 +1,21 @@
-"""CONST_FLOW 节点处理器。"""
+"""CONST_FLOW 节点处理器。图节点只做参数解析，动作分别交给三个模块。"""
 
 from __future__ import annotations
 
+import json
 import threading
-import time
 from typing import Any, Callable, Dict, List, Optional
 
 from infrastructure.config_loader import load_config
 from infrastructure.error_logger import get_error_logger
-from hardware.navigation_utils import (
-    build_navigation_goal, send_navigation_action, is_robot_at_pose,
-)
 from hardware.task_utils import send_task_action
 from core.flow_engine import FlowNode, FlowContext
 
 from programs.CONST_FLOW.constants import (
-    NavigationPose, ConstNavTolerance, ConstService, ConstTimeout, ConstTask,
-    CONST_TASK_ACTION_SPEC, PoseType, RobotLiveStatus, HumanReason,
+    ConstTimeout, CONST_TASK_ACTION_SPEC, PoseType, RobotLiveStatus, HumanReason,
 )
-from programs.CONST_FLOW.mqtt_adapter import ConSTMqttAdapter
+from programs.CONST_FLOW.mqtt_adapter import ConSTMqttAdapter, station_seq_of
+from programs.CONST_FLOW import calsys_ops, robot_ops, station_logic
 
 logger = get_error_logger()
 _LOG = "CONST_FLOW"
@@ -40,16 +37,27 @@ def _stop_event(ctx: FlowContext) -> Optional[threading.Event]:
     return ctx.extra.get("stop_event")
 
 
-def _sleep(ctx: FlowContext, seconds: float) -> bool:
-    ev = _stop_event(ctx)
-    if ev is None:
-        time.sleep(max(0.0, seconds))
-        return True
-    return not ev.wait(timeout=max(0.0, seconds))
-
-
 def _mqtt(ctx: FlowContext) -> Optional[ConSTMqttAdapter]:
     return ctx.extra.get("const_mqtt")
+
+
+def _as_extra_params(value: Any) -> Dict[str, Any]:
+    """
+    extra_params 兜底成 dict。
+
+    编辑器里这个字段是 json 类型、存下来通常已经是 dict，但两种情况会拿到字符串：
+    解析失败时前端原样回存，以及用 {{变量}} 从上下文取值时变量里放的是 JSON 文本。
+    不兜底的话 call_task 会静默丢弃参数（reinstall / is_passed 传不过去）。
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            logger.warning(_LOG, f"extra_params 不是合法 JSON，已按空处理: {value!r}")
+    return {}
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -67,27 +75,6 @@ def _wait_timeout(ctx: FlowContext, timeout: Any) -> Optional[float]:
     if ctx.extra.get("dryrun") and timeout_f is None:
         return _DRYRUN_WAIT_S
     return timeout_f
-
-
-def _dut_ok(data: Optional[Dict[str, Any]]) -> bool:
-    if not data:
-        return False
-    try:
-        code = int(data.get("code", 1))
-    except (TypeError, ValueError):
-        return False
-    if code != 0:
-        return False
-    dut = data.get("dut") or {}
-    return bool(dut.get("leakTestPassed", True))
-
-
-def _can_reinsert(return_params: Dict[str, Any]) -> bool:
-    if "can_reinsert" in return_params:
-        return bool(return_params.get("can_reinsert"))
-    if "canReinsert" in return_params:
-        return bool(return_params.get("canReinsert"))
-    return True
 
 
 def build_handler_registry(
@@ -112,57 +99,6 @@ def build_handler_registry(
         if mqtt is not None:
             ctx.extra.setdefault("const_mqtt", mqtt)
 
-    def _nav_to(ctx: FlowContext, robot, pose_name: str, timeout: float) -> bool:
-        waypoints = getattr(NavigationPose, pose_name, None)
-        if not waypoints:
-            logger.error(_LOG, f"未知点位 '{pose_name}'（请在编辑器「点位」里添加）")
-            return False
-        dryrun = bool(ctx.extra.get("dryrun"))
-        skip = True
-        if skip and not dryrun and is_robot_at_pose(
-            robot, waypoints, ConstNavTolerance.DISTANCE, ConstNavTolerance.HEADING, timeout=3.0,
-        ):
-            logger.info(_LOG, f"已在 {pose_name}，跳过导航")
-            ctx.set("last_nav_pose", pose_name)
-            return True
-        goal = build_navigation_goal(
-            waypoints,
-            distance_tolerance=ConstNavTolerance.DISTANCE,
-            heading_tolerance=ConstNavTolerance.HEADING,
-        )
-        nav_timeout = float(timeout or ConstTimeout.NAVIGATION)
-        retry = not dryrun
-        if dryrun:
-            nav_timeout = min(nav_timeout, 12.0)
-        result = send_navigation_action(robot, goal, timeout=nav_timeout, retry_on_disconnect=retry)
-        ctx.set("last_nav_pose", pose_name)
-        ctx.set("last_nav_result", str(getattr(result, "state", result)))
-        if not result.succeeded:
-            logger.error(_LOG, f"导航到 {pose_name} 失败: {ctx.get('last_nav_result')}")
-            return False
-        return True
-
-    def _service(ctx: FlowContext, robot, task: str, area: str, extra_params: Any, timeout: float):
-        if ctx.extra.get("dryrun"):
-            timeout = min(float(timeout or ConstTimeout.ROBOT_ACTION), 15.0)
-        extra = extra_params if isinstance(extra_params, dict) else {}
-        result = robot.send_service_request_task(
-            ConstService.ROBOT_TASK, task=task, area=area,
-            extra_params=extra, maxtime=timeout,
-        )
-        parsed = result.parse_return_params() if result is not None else {}
-        parsed = parsed or {}
-        if ctx.extra.get("dryrun") and task == ConstTask.PICK_UP_BOX:
-            if not parsed.get("has_box") and not parsed.get("hasBox"):
-                parsed["has_box"] = True
-                parsed.setdefault("gauge_count", 4)
-                logger.info(_LOG, "演练：mock 未带回 has_box，按有箱 gauge_count=4 继续")
-        ctx.set("last_op_task", task)
-        ctx.set("last_op_success", bool(result))
-        ctx.set("last_return_params", parsed)
-        ctx.set("last_error_msg", getattr(result, "error_msg", "") or "")
-        return result, parsed
-
     def handle_navigate(node: FlowNode, ctx: FlowContext) -> bool:
         _ensure_extra(ctx)
         adapter = _adapter(ctx)
@@ -178,7 +114,7 @@ def build_handler_registry(
         if adapter:
             adapter.set_status(RobotLiveStatus.MOVING)
         timeout = float(_param(node, ctx, "timeout", ConstTimeout.NAVIGATION) or ConstTimeout.NAVIGATION)
-        return _nav_to(ctx, robot, pose_name, timeout)
+        return robot_ops.nav_to(ctx, robot, pose_name, timeout)
 
     def handle_send_operation(node: FlowNode, ctx: FlowContext) -> bool:
         _ensure_extra(ctx)
@@ -190,7 +126,7 @@ def build_handler_registry(
         call_type = node.params.get("call_type", "service")
         task = _param(node, ctx, "task")
         area = _param(node, ctx, "area", "") or ""
-        extra_params = _param(node, ctx, "extra_params", {}) or {}
+        extra_params = _as_extra_params(_param(node, ctx, "extra_params", {}))
         timeout = float(_param(node, ctx, "timeout", ConstTimeout.ROBOT_ACTION) or ConstTimeout.ROBOT_ACTION)
         if call_type == "action":
             result = send_task_action(
@@ -204,10 +140,17 @@ def build_handler_registry(
                 parsed = result.parse_return_params() or {}
             ctx.set("last_return_params", parsed)
             return bool(result)
-        result, _parsed = _service(ctx, robot, task, area, extra_params, timeout)
-        if not result:
+        ok, parsed = robot_ops.call_task(ctx, robot, task, area, extra_params, timeout)
+        # 装表/拆表时机器人会带回 can_reinsert=false 表示表掉了。
+        # 这种情况动作本身是成功的，但后面不能再重插，只能呼人工——
+        # 所以不并进本节点的成功/失败，而是写成 gauge_dropped 让图上用条件分支判。
+        # 搬箱之类不带这个字段的任务，can_reinsert 缺省为 true，此处恒为 False，无副作用。
+        ctx.set("gauge_dropped", ok and not robot_ops.can_reinsert(parsed))
+        if not ok:
             logger.error(_LOG, f"操作 {task} 失败: {ctx.get('last_error_msg')}")
             return False
+        if ctx.get("gauge_dropped"):
+            logger.warning(_LOG, f"操作 {task} 完成，但机器人报表已掉落（can_reinsert=false）")
         return True
 
     def handle_update_step(node: FlowNode, ctx: FlowContext) -> bool:
@@ -353,12 +296,20 @@ def build_handler_registry(
         if not st:
             ctx.set("has_station", False)
             return False
-        seq = _as_int(st.get("sequenceNumber"), 0)
+        seq = station_seq_of(st)
         pose = PoseType.station(seq)
         ctx.set("has_station", True)
         ctx.set("station_seq", seq)
         ctx.set("station_pose", pose)
         ctx.set("station_name", st.get("name") or pose)
+        if seq <= 0:
+            logger.warning(
+                _LOG,
+                f"选中工位序号无效 stationSeq={st.get('stationSeq')!r} "
+                f"sequenceNumber={st.get('sequenceNumber')!r} "
+                f"status={st.get('robotStationStatus')} name={st.get('name')}",
+            )
+        logger.info(_LOG, f"选中待装表工位 seq={seq} pose={pose} remaining={remaining}")
         return True
 
     def handle_stations_all_free(node: FlowNode, ctx: FlowContext) -> bool:
@@ -369,67 +320,6 @@ def build_handler_registry(
         ctx.set("stations_all_free", ok)
         return ok
 
-    def _install_once(ctx, robot, adapter, seq, pose, timeout) -> str:
-        adapter.set_status(RobotLiveStatus.INSTALL, seq)
-        adapter.take_dutinfo(seq)
-        reply = adapter.request_with_code_retry(
-            lambda: adapter.install(seq, 0), stop_event=_stop_event(ctx),
-        )
-        code = adapter.reply_code(reply)
-        if reply is None:
-            adapter.call_human(HumanReason.MQTT_TIMEOUT)
-            return "human"
-        if code != 0:
-            adapter.call_human(HumanReason.CALSYS_ERROR)
-            return "human"
-        if not _sleep(ctx, ConstTimeout.GANTRY_WAIT):
-            return "fail"
-        result, parsed = _service(ctx, robot, ConstTask.INSTALL_GAUGE, pose, {}, timeout)
-        if result and not _can_reinsert(parsed):
-            adapter.call_human(HumanReason.GAUGE_DROPPED)
-            return "human"
-        if not result:
-            return "retry"
-        reply = adapter.request_with_code_retry(
-            lambda: adapter.install(seq, 1), stop_event=_stop_event(ctx),
-        )
-        code = adapter.reply_code(reply)
-        if reply is None or code != 0:
-            adapter.call_human(HumanReason.MQTT_TIMEOUT if reply is None else HumanReason.CALSYS_ERROR)
-            return "human"
-        adapter.set_status(RobotLiveStatus.WAIT_CALSYS, seq)
-        dut = adapter.wait_dutinfo(seq, timeout=ConstTimeout.IDENTIFY_WAIT, stop_event=_stop_event(ctx))
-        if dut is None:
-            dut_reply = adapter.query_dutinfo(seq)
-            dut = (dut_reply or {}).get("data") if dut_reply else None
-        if _dut_ok(dut):
-            return "ok"
-        return "retry"
-
-    def _uninstall_once(ctx, robot, adapter, seq, pose, extra, timeout) -> str:
-        adapter.set_status(RobotLiveStatus.UNINSTALL, seq)
-        reply = adapter.request_with_code_retry(
-            lambda: adapter.uninstall(seq, 0), stop_event=_stop_event(ctx),
-        )
-        code = adapter.reply_code(reply)
-        if reply is None or code != 0:
-            adapter.call_human(HumanReason.MQTT_TIMEOUT if reply is None else HumanReason.CALSYS_ERROR)
-            return "human"
-        result, parsed = _service(ctx, robot, ConstTask.UNINSTALL_GAUGE, pose, extra, timeout)
-        if result and not _can_reinsert(parsed):
-            adapter.call_human(HumanReason.GAUGE_DROPPED)
-            return "human"
-        if not result:
-            return "fail"
-        reply = adapter.request_with_code_retry(
-            lambda: adapter.uninstall(seq, 1), stop_event=_stop_event(ctx),
-        )
-        code = adapter.reply_code(reply)
-        if reply is None or code != 0:
-            adapter.call_human(HumanReason.MQTT_TIMEOUT if reply is None else HumanReason.CALSYS_ERROR)
-            return "human"
-        return "ok"
-
     def handle_install_station(node: FlowNode, ctx: FlowContext) -> bool:
         _ensure_extra(ctx)
         adapter = _adapter(ctx)
@@ -439,38 +329,7 @@ def build_handler_registry(
         seq = _as_int(_param(node, ctx, "station_seq", ctx.get("station_seq")), 0)
         pose = _param(node, ctx, "station_pose", ctx.get("station_pose")) or PoseType.station(seq)
         timeout = float(_param(node, ctx, "timeout", ConstTimeout.ROBOT_ACTION) or ConstTimeout.ROBOT_ACTION)
-        if not _nav_to(ctx, robot, pose, ConstTimeout.NAVIGATION):
-            return False
-        retries = ConstTimeout.IDENTIFY_RETRIES
-        outcome = "fail"
-        for attempt in range(retries + 1):
-            if attempt > 0:
-                logger.warning(_LOG, f"工位 {seq} 识别/检漏失败，第 {attempt} 次重插")
-                u = _uninstall_once(ctx, robot, adapter, seq, pose, {"reinstall": True}, timeout)
-                if u == "human":
-                    outcome = "human"
-                    break
-            outcome = _install_once(ctx, robot, adapter, seq, pose, timeout)
-            if outcome in ("ok", "human"):
-                break
-        if outcome == "human":
-            ctx.set("need_human", True)
-            adapter.wait_human(_stop_event(ctx))
-            ctx.set("need_human", False)
-            ctx.set("remaining", max(0, _as_int(ctx.get("remaining"), 0) - 1))
-            return True
-        if outcome != "ok":
-            logger.warning(_LOG, f"工位 {seq} 超过 {retries} 次重插，按坏表拆回后部料箱")
-            _uninstall_once(ctx, robot, adapter, seq, pose, {"is_passed": False}, timeout)
-            ctx.set("remaining", max(0, _as_int(ctx.get("remaining"), 0) - 1))
-            return True
-        installed: List[int] = list(ctx.get("installed_stations") or [])
-        if seq not in installed:
-            installed.append(seq)
-        ctx.set("remaining", max(0, _as_int(ctx.get("remaining"), 0) - 1))
-        ctx.set("installed_stations", installed)
-        ctx.set("placed_this_round", _as_int(ctx.get("placed_this_round"), 0) + 1)
-        return True
+        return station_logic.install_station(ctx, robot, adapter, seq, pose, timeout)
 
     def handle_mqtt_start(node: FlowNode, ctx: FlowContext) -> bool:
         _ensure_extra(ctx)
@@ -516,20 +375,7 @@ def build_handler_registry(
         if adapter is None or robot is None:
             return False
         timeout = float(_param(node, ctx, "timeout", ConstTimeout.ROBOT_ACTION) or ConstTimeout.ROBOT_ACTION)
-        for seq in list(ctx.get("installed_stations") or []):
-            pose = PoseType.station(seq)
-            if not _nav_to(ctx, robot, pose, ConstTimeout.NAVIGATION):
-                return False
-            u = _uninstall_once(ctx, robot, adapter, seq, pose, {"reinstall": True}, timeout)
-            if u == "human":
-                adapter.wait_human(_stop_event(ctx))
-            i = _install_once(ctx, robot, adapter, seq, pose, timeout)
-            if i == "human":
-                adapter.wait_human(_stop_event(ctx))
-            if i != "ok":
-                logger.error(_LOG, f"泄漏后重装工位 {seq} 失败")
-                return False
-        return True
+        return station_logic.reinstall_all(ctx, robot, adapter, timeout)
 
     def handle_uninstall_all(node: FlowNode, ctx: FlowContext) -> bool:
         _ensure_extra(ctx)
@@ -538,23 +384,94 @@ def build_handler_registry(
         if adapter is None or robot is None:
             return False
         timeout = float(_param(node, ctx, "timeout", ConstTimeout.ROBOT_ACTION) or ConstTimeout.ROBOT_ACTION)
-        details = {}
-        for d in (ctx.get("end_station_details") or []):
-            seq = _as_int(d.get("sequence", d.get("sequenceNumber", -1)), -1)
-            details[seq] = bool(d.get("isPassed"))
-        for seq in list(ctx.get("installed_stations") or []):
-            pose = PoseType.station(seq)
-            is_passed = details.get(int(seq), False)
-            if not _nav_to(ctx, robot, pose, ConstTimeout.NAVIGATION):
-                return False
-            u = _uninstall_once(ctx, robot, adapter, seq, pose, {"is_passed": is_passed}, timeout)
-            if u == "human":
-                adapter.wait_human(_stop_event(ctx))
-            if u not in ("ok", "human"):
-                logger.error(_LOG, f"拆表工位 {seq} 失败")
-                return False
-        ctx.set("installed_stations", [])
-        ctx.set("placed_this_round", 0)
+        return station_logic.uninstall_all(ctx, robot, adapter, timeout)
+
+    # ── 装表链的原子节点 ────────────────────────────────────────────────────
+    #
+    # 这一组节点把原先 station_logic.install_station() 里写死的编排拆了出来，
+    # 让"装表并等识别/检漏"能在子流程图上排（flows/const_install_once.json）。
+    # 每个节点只做一件事、不含内部分支，顺序和分支交给图去表达：
+    # 想在装表后加一步、想改重插次数、想调让位与合龙的时机，改图即可，不用动 Python。
+    #
+    # 分层没变：机器人动作仍走 robot_ops、上位机协议仍走 calsys_ops，
+    # 这里只负责把节点参数翻译成对它们的一次调用。
+
+    def _seq_pose(node: FlowNode, ctx: FlowContext):
+        """工位序号与点位：节点参数优先，留空则取流程变量（主图选工位时写入）。"""
+        seq = _as_int(_param(node, ctx, "station_seq", ctx.get("station_seq")), 0)
+        pose = _param(node, ctx, "station_pose", ctx.get("station_pose")) or PoseType.station(seq)
+        return seq, pose
+
+    def _calsys_action(node: FlowNode, ctx: FlowContext, kind: str) -> bool:
+        """
+        上位机装/拆表动作。需要人工介入时置 need_human 并走 failure 出口，
+        由图上接一个「呼叫人工」节点处理——原先这个决定藏在 Python 里。
+        """
+        _ensure_extra(ctx)
+        adapter = _adapter(ctx)
+        if adapter is None:
+            return False
+        seq, _ = _seq_pose(node, ctx)
+        action = _as_int(_param(node, ctx, "action", 0), 0)
+        fn = calsys_ops.install_action if kind == "install" else calsys_ops.uninstall_action
+        outcome = fn(adapter, seq, action, ctx)
+        ctx.set("need_human", outcome == "human")
+        return outcome == "ok"
+
+    def handle_calsys_install(node: FlowNode, ctx: FlowContext) -> bool:
+        return _calsys_action(node, ctx, "install")
+
+    def handle_calsys_uninstall(node: FlowNode, ctx: FlowContext) -> bool:
+        return _calsys_action(node, ctx, "uninstall")
+
+    def handle_wait_identify(node: FlowNode, ctx: FlowContext) -> bool:
+        """
+        等上位机的识别/检漏结果。success=检漏通过，failure=未通过或没等到，
+        图上接重插分支。判定规则仍复用 station_logic.dut_ok。
+        """
+        _ensure_extra(ctx)
+        adapter = _adapter(ctx)
+        if adapter is None:
+            return False
+        seq, _ = _seq_pose(node, ctx)
+        dut = calsys_ops.wait_identify(adapter, seq, ctx)
+        passed = station_logic.dut_ok(dut)
+        ctx.set("identify_passed", passed)
+        ctx.set("identify_result", dut or {})
+        logger.info(_LOG, f"工位 {seq} 识别/检漏结果 passed={passed} dut={dut}")
+        return passed
+
+    def handle_take_dutinfo(node: FlowNode, ctx: FlowContext) -> bool:
+        """通知上位机开始取被检表信息（装表前置动作）。"""
+        _ensure_extra(ctx)
+        adapter = _adapter(ctx)
+        if adapter is None:
+            return False
+        seq, _ = _seq_pose(node, ctx)
+        adapter.take_dutinfo(seq)
+        return True
+
+    def handle_mark_installed(node: FlowNode, ctx: FlowContext) -> bool:
+        """把当前工位记入已装表清单（供后续重装/拆表遍历）。"""
+        seq, _ = _seq_pose(node, ctx)
+        installed = list(ctx.get("installed_stations") or [])
+        if seq not in installed:
+            installed.append(seq)
+        ctx.set("installed_stations", installed)
+        ctx.set("placed_this_round", _as_int(ctx.get("placed_this_round"), 0) + 1)
+        logger.info(_LOG, f"工位 {seq} 装表成功 installed={installed}")
+        return True
+
+    def handle_consume_gauge(node: FlowNode, ctx: FlowContext) -> bool:
+        """
+        料箱里的表少一只。
+
+        装表的三种结局（成功 / 呼人工 / 超次数按坏表拆回）都要走这一步，
+        否则 remaining 不减，主图的装表循环会一直选到工位、永远退不出来。
+        """
+        before = _as_int(ctx.get("remaining"), 0)
+        ctx.set("remaining", max(0, before - 1))
+        logger.info(_LOG, f"消耗一只表 remaining {before} → {ctx.get('remaining')}")
         return True
 
     def handle_call_human(node: FlowNode, ctx: FlowContext) -> bool:
@@ -578,6 +495,12 @@ def build_handler_registry(
         "const_pick_station": handle_pick_station,
         "const_stations_all_free": handle_stations_all_free,
         "const_install_station": handle_install_station,
+        "const_take_dutinfo": handle_take_dutinfo,
+        "const_calsys_install": handle_calsys_install,
+        "const_calsys_uninstall": handle_calsys_uninstall,
+        "const_wait_identify": handle_wait_identify,
+        "const_mark_installed": handle_mark_installed,
+        "const_consume_gauge": handle_consume_gauge,
         "const_mqtt_start": handle_mqtt_start,
         "const_wait_end": handle_wait_end,
         "const_reinstall_all": handle_reinstall_all,
@@ -640,7 +563,10 @@ NODE_TYPE_SCHEMAS: Dict[str, Dict] = {
         "outputs": ["success", "failure"],
     },
     "const_install_station": {
-        "label": "装表（含识别/检漏重插）",
+        # 整块封装版：编排写死在 station_logic.install_station() 里，图上改不了顺序。
+        # 已由子流程 flows/const_install_station.json 取代，保留仅为兼容旧的流程图，
+        # 所以不出现在编辑器面板上（见下方 HIDDEN_NODE_TYPES）。
+        "label": "装表（整块封装 · 旧版）",
         "category": "ConST / 工位",
         "fields": [
             {"name": "station_seq", "type": "text", "label": "工位序号", "default": "{{station_seq}}"},
@@ -648,6 +574,71 @@ NODE_TYPE_SCHEMAS: Dict[str, Dict] = {
             {"name": "timeout", "type": "number", "label": "动作超时秒数", "default": 1200},
         ],
         "outputs": ["success", "failure"],
+    },
+
+    # ── 装表链的原子节点（供子流程图排布）──────────────────────────────
+    "const_take_dutinfo": {
+        "label": "通知上位机取表信息",
+        "category": "ConST / 装表步骤",
+        "fields": [
+            {"name": "station_seq", "type": "text", "label": "工位序号", "default": "{{station_seq}}",
+             "hint": "留空则用主图选工位时写入的 station_seq"},
+            {"name": "station_pose", "type": "text", "label": "导航点名", "default": "{{station_pose}}"},
+        ],
+        "outputs": ["success", "failure"],
+    },
+    "const_calsys_install": {
+        "label": "上位机装表动作（让位/合龙）",
+        "category": "ConST / 装表步骤",
+        "fields": [
+            {"name": "action", "type": "select", "label": "动作", "required": True,
+             "options": ["0", "1"], "default": "0",
+             "hint": "0=让位（装表前让开龙门架），1=合龙（装完复位）"},
+            {"name": "station_seq", "type": "text", "label": "工位序号", "default": "{{station_seq}}",
+             "hint": "留空则用主图选工位时写入的 station_seq"},
+            {"name": "station_pose", "type": "text", "label": "导航点名", "default": "{{station_pose}}"},
+        ],
+        "outputs": ["success", "failure"],
+    },
+    "const_calsys_uninstall": {
+        "label": "上位机拆表动作（让位/合龙）",
+        "category": "ConST / 装表步骤",
+        "fields": [
+            {"name": "action", "type": "select", "label": "动作", "required": True,
+             "options": ["0", "1"], "default": "0",
+             "hint": "0=让位，1=合龙"},
+            {"name": "station_seq", "type": "text", "label": "工位序号", "default": "{{station_seq}}",
+             "hint": "留空则用主图选工位时写入的 station_seq"},
+            {"name": "station_pose", "type": "text", "label": "导航点名", "default": "{{station_pose}}"},
+        ],
+        "outputs": ["success", "failure"],
+    },
+    "const_wait_identify": {
+        "label": "等识别/检漏结果",
+        "category": "ConST / 装表步骤",
+        "fields": [
+            {"name": "station_seq", "type": "text", "label": "工位序号", "default": "{{station_seq}}",
+             "hint": "留空则用主图选工位时写入的 station_seq"},
+            {"name": "station_pose", "type": "text", "label": "导航点名", "default": "{{station_pose}}"},
+        ],
+        "outputs": ["success", "failure"],
+    },
+    "const_mark_installed": {
+        "label": "记为已装表",
+        "category": "ConST / 装表步骤",
+        "fields": [
+            {"name": "station_seq", "type": "text", "label": "工位序号", "default": "{{station_seq}}",
+             "hint": "留空则用主图选工位时写入的 station_seq"},
+            {"name": "station_pose", "type": "text", "label": "导航点名", "default": "{{station_pose}}"},
+        ],
+        "outputs": ["default"],
+    },
+    "const_consume_gauge": {
+        "label": "料箱表数 -1",
+        "category": "ConST / 装表步骤",
+        "fields": [],
+        "outputs": ["default"],
+        "hint": "装表的每种结局都要走一次，否则 remaining 不减，主图装表循环退不出来",
     },
     "const_mqtt_start": {
         "label": "请求启动检定",
@@ -698,3 +689,51 @@ STEP_OPTIONS = [
     RobotLiveStatus.UNINSTALL, RobotLiveStatus.WAIT_CALSYS, RobotLiveStatus.CALL_HUMAN,
 ]
 
+
+#: 不在编辑器面板上显示的节点类型。
+#: 处理器仍然注册着（旧流程图还能跑），只是不希望有人再拖它到新图上——
+#: const_install_station 的编排写死在 Python 里，正是这次要解决的问题。
+HIDDEN_NODE_TYPES = ["const_install_station"]
+
+
+def validate_graph(graph: Dict[str, Any]) -> List[str]:
+    """
+    CONST_FLOW 专有的图校验，补在通用结构校验之后。
+
+    装表编排从 Python 搬到图上之后，多了一类只有跑起来才发现的错误：
+    料箱表数（remaining）的消耗原本和装表是一次原子操作，现在拆成了两个节点。
+    装完表却没走到「料箱表数 -1」，remaining 就永远不减，
+    主图的装表循环会一直选到工位、退不出来——现场表现是机器人反复装同一个工位。
+
+    判据用"记为已装表之后能不能走到料箱表数 -1"，而不是"图里有没有这个节点"：
+    后者会误伤只负责装一次表的内层子流程（消耗表数是外层的职责），
+    也抓不到节点画了但没接上的情况。
+    """
+    nodes = {n.get("id"): n for n in graph.get("nodes", [])}
+    starts = [nid for nid, n in nodes.items() if n.get("type") == "const_mark_installed"]
+    if not starts:
+        return []      # 这张图不负责装表收尾（比如内层的"装一次表"），不管
+
+    adj: Dict[str, List[str]] = {}
+    for e in graph.get("edges", []):
+        adj.setdefault(e.get("source"), []).append(e.get("target"))
+
+    warnings: List[str] = []
+    for start in starts:
+        seen, stack, reached = {start}, [start], False
+        while stack:
+            cur = stack.pop()
+            if nodes.get(cur, {}).get("type") == "const_consume_gauge":
+                reached = True
+                break
+            for nxt in adj.get(cur, []):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        if not reached:
+            warnings.append(
+                f"节点 [{nodes[start].get('label') or start}] 装完表后走不到「料箱表数 -1」："
+                f"remaining 不会减少，主图的装表循环可能退不出来。"
+                f"装表的每种结局（成功/呼人工/超次数拆回）都要汇到一个「料箱表数 -1」"
+            )
+    return warnings

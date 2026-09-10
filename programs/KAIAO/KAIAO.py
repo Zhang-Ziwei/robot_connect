@@ -202,6 +202,42 @@ def _is_end_facing(yaw_rad: float, half_width_deg: float = 45.0) -> bool:
     return abs(math.sin(yaw_rad)) > thr
 
 
+def _yaw_from_quat(qz: float, qw: float) -> float:
+    return 2.0 * math.atan2(qz, qw)
+
+
+def _quat_from_yaw(yaw: float) -> Tuple[float, float]:
+    return math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+
+
+def _wp_at(x: float, y: float, yaw: float) -> Tuple[float, ...]:
+    qz, qw = _quat_from_yaw(yaw)
+    return (float(x), float(y), 0.0, 0.0, 0.0, qz, qw)
+
+
+def _wp_retreat(x: float, y: float, qz: float, qw: float, dist: float) -> Tuple[float, ...]:
+    yaw = _yaw_from_quat(qz, qw)
+    return (float(x) - math.cos(yaw) * dist, float(y), 0.0, 0.0, 0.0, qz, qw)
+
+
+def _first_xyqw(pose) -> Optional[Tuple[float, float, float, float]]:
+    if pose is None:
+        return None
+    p = pose
+    if isinstance(p, list) and p and isinstance(p[0], (list, tuple)):
+        p = p[0]
+    if not isinstance(p, (list, tuple)) or len(p) < 7:
+        return None
+    return float(p[0]), float(p[1]), float(p[5]), float(p[6])
+
+
+def _xy_near_pose(x: float, y: float, pose, radius: float = 0.4) -> bool:
+    p = _first_xyqw(pose)
+    if p is None:
+        return False
+    return math.hypot(x - p[0], y - p[1]) <= radius
+
+
 def _compute_intermediate_waypoint(
     src_x: float, src_y: float, src_qz: float, src_qw: float,
     tgt_x: float, tgt_y: float, tgt_qz: float, tgt_qw: float,
@@ -329,6 +365,16 @@ _MID_JITTER_RADIUS_M = 0.02
 _MID_PLANNING_MAX_RETRIES = 3
 #: 拿不到当前位姿、只能直达目标时：导航下发后再等这么久发 adjust_pose
 _ADJUST_AFTER_DIRECT_NAV_S = 3.0
+#: split 导航各场景中间点步骤名（按插入顺序）；end_to_end 单独处理
+_SPLIT_MID_NAMES = {
+    "end_to_side": ("平移中间点", "原地旋转"),
+    "side_to_end": ("平移中间点", "原地旋转"),
+    "side_to_end_clear": ("后退", "远离AGV平移", "原地旋转"),
+    "side_to_side_carry": ("后退", "转向零件车", "目标前方接近", "转向目标"),
+    "side_to_side_empty": ("后退",),
+    "side_to_side": ("中间点",),
+    "side_to_side_same": ("后退", "对齐目标y"),
+}
 
 
 def _nav_causes_blob(res, err_msg: str = "") -> str:
@@ -632,12 +678,57 @@ class KAIAOHandler:
     def _get_waypoint_config(self) -> Dict[str, Any]:
         """
         读取走廊中间点生成参数（来自 robot_config.json 的 kaiao_waypoint 节）。
+        图形化「配置文件」里改的同一段；缺项用 constants 默认值补齐。
         """
         try:
             from infrastructure.config_loader import load_config
-            return load_config().get("kaiao_waypoint", {})
+            from programs.KAIAO.constants import merge_kaiao_waypoint_config
+            return merge_kaiao_waypoint_config(load_config().get("kaiao_waypoint", {}))
         except Exception:
-            return {}
+            from programs.KAIAO.constants import kaiao_waypoint_defaults
+            return kaiao_waypoint_defaults()
+
+    def _area_yaw(self, area_name: str, default: float = math.pi / 2.0) -> float:
+        p = self._pose_xy_qw_from_area(area_name)
+        if p is None:
+            return default
+        return _yaw_from_quat(p[2], p[3])
+
+    def _away_from_agv_y_sign(self, src_y: float) -> float:
+        """走廊沿 Y：远离 agv_car 的世界 Y 方向（+1 或 -1）。"""
+        agv = self._pose_xy_qw_from_area("agv_car0_0")
+        if agv is None:
+            return 1.0
+        dy = src_y - agv[1]
+        if abs(dy) < 1e-6:
+            cc = self._pose_xy_qw_from_area("component_car")
+            if cc is not None:
+                return math.copysign(1.0, cc[1] - agv[1]) or 1.0
+            return 1.0
+        return math.copysign(1.0, dy)
+
+    def _need_agv_clearance(
+        self,
+        src_x: float,
+        src_y: float,
+        tgt_x: float,
+        tgt_y: float,
+        wp_cfg: Dict[str, Any],
+    ) -> bool:
+        """起点靠近 agv 侧货架格（默认 shelf0_3 / shelf1_3）且终点靠近 agv_car。"""
+        radius = float(wp_cfg.get("pose_match_radius", 0.28))
+        from_areas = wp_cfg.get("side_to_end_agv_clear_from") or ["shelf0_3", "shelf1_3"]
+        to_areas = wp_cfg.get("side_to_end_agv_clear_to") or ["agv_car0_0"]
+        src_hit = any(
+            _xy_near_pose(src_x, src_y, get_nav_pose(name), radius)
+            for name in from_areas
+        )
+        if not src_hit:
+            return False
+        return any(
+            _xy_near_pose(tgt_x, tgt_y, get_nav_pose(name), radius)
+            for name in to_areas
+        )
 
     def _prepend_intermediate_waypoint(
         self,
@@ -659,9 +750,10 @@ class KAIAOHandler:
             (waypoints, nav_case) 二元组：
                 'end_to_end'  — waypoints[0] 为原地旋转路点
                 'end_to_side' / 'side_to_end' — waypoints[0]=平移, [1]=原地旋转, 其后为目标
-                'side_to_side' — 异侧货架，已插入单个撤退点
-                'side_to_side_same' — 同侧货架且手上有箱：waypoints[0]=后退, [1]=对齐目标y, 其后为目标
-                'no_change'   — 无需中间点（含同侧无箱时直达目标）
+                'side_to_end_clear' — 近 AGV 货架持箱去 agv_car：后退、远离平移、旋转
+                'side_to_side_carry' — 货架互搬有箱
+                'side_to_side_empty' — 货架互搬无箱：后退后直达
+                'no_change'   — 无需中间点
         """
         if mode == 'skip':
             return waypoints, 'no_change'
@@ -704,29 +796,29 @@ class KAIAOHandler:
                        math.sin(rot_yaw / 2.0), math.cos(rot_yaw / 2.0))
             return [rot_wp] + waypoints, 'end_to_end'
 
-        # 同侧货架→货架（角差小、两端均非走廊端点）：
-        #   手上有箱 → ①后退 ②平移到目标 y ③再去目标
-        #   手上无箱 → 直接前往目标（不插中间点）
-        if (
-            not is_src_end and not is_tgt_end
-            and abs(angle_diff) < math.radians(threshold)
-        ):
+        retreat = float(wp_cfg.get("side_to_side_same_retreat_dx", 0.3))
+        approach_d = float(wp_cfg.get("side_to_side_approach_dx", 0.4))
+
+        # 货架 → 货架（同侧/异侧同一套）：
+        #   有箱：后退 → 转向零件车 → 目标前方 0.4m → 转向目标 → 目标
+        #   无箱：后退 → 直达目标
+        if not is_src_end and not is_tgt_end:
+            retreat_wp = _wp_retreat(src_x, src_y, src_qz, src_qw, retreat)
             if not self._is_holding_box(robot_id):
-                logger.info(
-                    _LOG,
-                    f"[{robot_id}] 同侧货架移动但手上无箱，直达目标（跳过后退/平移）",
-                )
-                return waypoints, 'no_change'
-            retreat = float(wp_cfg.get("side_to_side_same_retreat_dx", 0.3))
-            # 朝向反方向后退进入走廊：yaw=0 → x减小；yaw=180° → x增大
-            retreat_x = src_x - math.cos(src_yaw) * retreat
-            retreat_wp = (retreat_x, src_y, 0.0, 0.0, 0.0, src_qz, src_qw)
-            align_wp = (retreat_x, tgt_y, 0.0, 0.0, 0.0, src_qz, src_qw)
+                logger.info(_LOG, f"[{robot_id}] 货架互搬且手上无箱：后退后直达目标")
+                return [retreat_wp] + waypoints, 'side_to_side_empty'
+            cc_yaw = self._area_yaw("component_car", default=math.pi / 2.0)
+            rx, ry = float(retreat_wp[0]), float(retreat_wp[1])
+            rot_cc = _wp_at(rx, ry, cc_yaw)
+            ax = tgt_x - math.cos(tgt_yaw) * approach_d
+            ay = tgt_y - math.sin(tgt_yaw) * approach_d
+            approach_wp = _wp_at(ax, ay, cc_yaw)
+            rot_tgt = _wp_at(ax, ay, tgt_yaw)
             logger.info(
                 _LOG,
-                f"[{robot_id}] 同侧货架移动且手上有箱，插入后退/对齐中间点",
+                f"[{robot_id}] 货架互搬且手上有箱：后退→转向零件车→目标前{approach_d:.2f}m→转向目标",
             )
-            return [retreat_wp, align_wp] + waypoints, 'side_to_side_same'
+            return [retreat_wp, rot_cc, approach_wp, rot_tgt] + waypoints, 'side_to_side_carry'
 
         def _to_tuple(raw):
             if raw is None:
@@ -757,6 +849,29 @@ class KAIAOHandler:
 
         if not is_src_end and not is_tgt_end:
             return [mid] + waypoints, 'side_to_side'
+
+        # 靠近 AGV 的货架格（默认 shelf0_3 / shelf1_3）搬箱去 agv_car：
+        # 后退 → adjust → 沿走廊远离 AGV 平移 0.40 → 转向 AGV → 目标
+        if (
+            not is_src_end and is_tgt_end
+            and self._is_holding_box(robot_id)
+            and self._need_agv_clearance(src_x, src_y, tgt_x, tgt_y, wp_cfg)
+        ):
+            clear_d = float(wp_cfg.get("side_to_end_agv_clear_dy", 0.4))
+            retreat_wp = _wp_retreat(src_x, src_y, src_qz, src_qw, retreat)
+            away = self._away_from_agv_y_sign(src_y)
+            shift_wp = (
+                float(retreat_wp[0]),
+                float(retreat_wp[1]) + away * clear_d,
+                0.0, 0.0, 0.0, src_qz, src_qw,
+            )
+            rot_yaw = src_yaw + math.copysign(math.radians(float(wp_cfg.get("angle_offset_deg", 90.0))), angle_diff)
+            rot_wp = _wp_at(shift_wp[0], shift_wp[1], rot_yaw)
+            logger.info(
+                _LOG,
+                f"[{robot_id}] 近 AGV 货架搬箱去 agv_car：后退→远离AGV {clear_d:.2f}m→转向AGV",
+            )
+            return [retreat_wp, shift_wp, rot_wp] + waypoints, 'side_to_end_clear'
 
         # 端点↔货架：拆成「平移(朝向不变)」+「原地旋转 angle_offset_deg」
         nav_case = 'end_to_side' if is_src_end else 'side_to_end'
@@ -808,10 +923,11 @@ class KAIAOHandler:
             waypoints:
                 若传入则跳过点位名解析，直接使用该路点列表
             mid_send:
-                'split' — 分多次 Action（默认）：
-                    · end_to_side / side_to_end：①平移 → ②原地旋转 → ③目标
-                    · side_to_side_same：①后退 → ②对齐目标y → ③目标
-                    · side_to_side：①撤退点 → ②目标
+                'split' — 分多次 Action（默认），每个中间点一次，最后一次发目标：
+                    · end_to_side / side_to_end：平移 → 原地旋转 → 目标
+                    · side_to_end_clear：后退 → 远离AGV平移 → 原地旋转 → 目标
+                    · side_to_side_carry：后退 → 转向零件车 → 目标前0.4m → 转向目标 → 目标
+                    · side_to_side_empty：后退 → 目标
                 'batch' — 中间点与目标在同一次 Action 一口气发送
                 （端点→端点原地旋转始终分两次，不受本参数影响）
 
@@ -854,8 +970,11 @@ class KAIAOHandler:
             'end_to_end':  '端点→端点（先原地旋转180°）',
             'end_to_side': '端点→货架（平移→原地旋转→目标）',
             'side_to_end': '货架→端点（平移→原地旋转→目标）',
-            'side_to_side':'货架→货架异侧（插入最近撤退点）',
+            'side_to_end_clear': '近AGV货架持箱→agv_car（后退→远离平移→旋转→目标）',
+            'side_to_side': '货架→货架异侧（插入最近撤退点）',
             'side_to_side_same': '货架→货架同侧（后退→对齐y→目标）',
+            'side_to_side_carry': '货架互搬有箱（后退→转向零件车→目标前→转向目标）',
+            'side_to_side_empty': '货架互搬无箱（后退→直达目标）',
             'no_change':   '直接导航（无中间点）',
         }
         case_desc = _CASE_DESC.get(nav_case, nav_case)
@@ -1084,37 +1203,27 @@ class KAIAOHandler:
                 res, err = _navigate_with_retry(original_waypoints, original_waypoints)
             else:
                 res, err = _navigate_with_retry(target_wps, original_waypoints)
-        elif (
-            mid_send == 'split'
-            and nav_case in ('end_to_side', 'side_to_end', 'side_to_side_same')
-            and len(waypoints) >= 3
-        ):
-            # 三步 Action：①中间点A ②中间点B ③目标
-            # end/side: 平移→旋转；同侧货架: 后退→对齐目标y
-            step1_wp, step2_wp, target_wps = waypoints[0], waypoints[1], waypoints[2:]
-            step1_name = "后退" if nav_case == 'side_to_side_same' else "平移中间点"
-            step2_name = "对齐目标y" if nav_case == 'side_to_side_same' else "原地旋转"
-            logger.info(_LOG, f"[{robot_id}] {label} 分步导航①：{step1_name} {step1_wp[:2]}")
-            print(f"  [KAIAO 导航][{robot_id}] 步骤1 {step1_name}: {step1_wp[:2]}")
-            status, res, err = _send_mid_waypoint(step1_wp, step1_name)
-            if status == "fail":
-                if err:
-                    logger.error(_LOG, err)
-                    if task_id:
-                        self.task_state_machine.set_error(err)
-                return False
-            if status == "skip":
-                res, err = _navigate_with_retry(original_waypoints, original_waypoints)
+        elif mid_send == 'split' and nav_case in _SPLIT_MID_NAMES and len(waypoints) >= 2:
+            n_orig = max(1, len(original_waypoints))
+            if len(waypoints) > n_orig:
+                mids = list(waypoints[:-n_orig])
+                target_wps = list(waypoints[-n_orig:])
             else:
-                # 第一步已离开取箱位（后退/平移），在此做 adjust_pose
-                if not _run_after_leave_shelf():
-                    return False
-                logger.info(_LOG, f"[{robot_id}] {label} 分步导航②：{step2_name}")
-                print(
-                    f"  [KAIAO 导航][{robot_id}] 步骤2 {step2_name}: "
-                    f"{step2_wp[:2]} qz/qw={step2_wp[5]:.3f}/{step2_wp[6]:.3f}"
+                mids = list(waypoints[:-1])
+                target_wps = list(waypoints[-1:])
+            names = list(_SPLIT_MID_NAMES.get(nav_case) or ())
+            while len(names) < len(mids):
+                names.append(f"中间点{len(names) + 1}")
+            skipped = False
+            res, err = None, None
+            for i, mid_wp in enumerate(mids):
+                step_name = names[i]
+                logger.info(
+                    _LOG,
+                    f"[{robot_id}] {label} 分步导航{i + 1}：{step_name} {mid_wp[:2]}",
                 )
-                status, res, err = _send_mid_waypoint(step2_wp, step2_name)
+                print(f"  [KAIAO 导航][{robot_id}] 步骤{i + 1} {step_name}: {mid_wp[:2]}")
+                status, res, err = _send_mid_waypoint(mid_wp, step_name)
                 if status == "fail":
                     if err:
                         logger.error(_LOG, err)
@@ -1122,33 +1231,16 @@ class KAIAOHandler:
                             self.task_state_machine.set_error(err)
                     return False
                 if status == "skip":
-                    res, err = _navigate_with_retry(original_waypoints, original_waypoints)
-                else:
-                    logger.info(_LOG, f"[{robot_id}] {label} 分步导航③：目标点")
-                    print(f"  [KAIAO 导航][{robot_id}] 步骤3 目标点 {label}")
-                    res, err = _navigate_with_retry(target_wps, original_waypoints)
-        elif (
-            mid_send == 'split'
-            and nav_case == 'side_to_side'
-            and len(waypoints) >= 2
-        ):
-            mid_wp, target_wps = waypoints[0], waypoints[1:]
-            logger.info(_LOG, f"[{robot_id}] {label} 分步导航 步骤1：中间点 {mid_wp[:2]}")
-            print(f"  [KAIAO 导航][{robot_id}] 步骤1 中间点: {mid_wp[:2]}")
-            status, res, err = _send_mid_waypoint(mid_wp, "中间点")
-            if status == "fail":
-                if err:
-                    logger.error(_LOG, err)
-                    if task_id:
-                        self.task_state_machine.set_error(err)
-                return False
-            if status == "skip":
-                res, err = _navigate_with_retry(original_waypoints, original_waypoints)
-            else:
-                if not _run_after_leave_shelf():
+                    res, err = _navigate_with_retry(
+                        original_waypoints, original_waypoints,
+                    )
+                    skipped = True
+                    break
+                if i == 0 and not _run_after_leave_shelf():
                     return False
-                logger.info(_LOG, f"[{robot_id}] {label} 分步导航 步骤2：目标点")
-                print(f"  [KAIAO 导航][{robot_id}] 步骤2 目标点 {label}")
+            if not skipped:
+                logger.info(_LOG, f"[{robot_id}] {label} 分步导航：目标点")
+                print(f"  [KAIAO 导航][{robot_id}] 步骤{len(mids) + 1} 目标点 {label}")
                 res, err = _navigate_with_retry(target_wps, original_waypoints)
         else:
             delay = (

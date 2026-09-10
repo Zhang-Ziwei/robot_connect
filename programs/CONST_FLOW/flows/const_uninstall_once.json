@@ -1,0 +1,161 @@
+{
+  "id": "const_uninstall_once",
+  "name": "拆一次表（让位→拆表→合龙）",
+  "description": "一次拆表的完整步骤：上报状态 → 上位机让位 → 机器人拆表 → 合龙。发给机器人的 extra_params 取自上下文变量 uninstall_extra，调用前用「设置变量」写好：重插前拆填 {\"reinstall\": true}，按检定结果拆回填 {\"is_passed\": true/false}。结果写入 uninstall_result：ok / human（表掉了或上位机要人工）/ fail。",
+  "role": "subflow",
+  "enabled": false,
+  "start": "set_live_un",
+  "nodes": [
+    {
+      "id": "set_live_un",
+      "type": "const_set_live",
+      "label": "上报状态：拆表",
+      "params": {
+        "status": "拆表",
+        "station_seq": "{{station_seq}}"
+      },
+      "x": 60,
+      "y": 200
+    },
+    {
+      "id": "un_free",
+      "type": "const_calsys_uninstall",
+      "label": "上位机让位",
+      "params": {
+        "action": "0"
+      },
+      "x": 280,
+      "y": 200
+    },
+    {
+      "id": "do_uninstall",
+      "type": "send_operation",
+      "label": "机器人拆表",
+      "params": {
+        "call_type": "service",
+        "service": "robot_task",
+        "task": "uninstall_gauge",
+        "area": "{{station_pose}}",
+        "extra_params": "{{uninstall_extra}}",
+        "timeout": 1200
+      },
+      "x": 500,
+      "y": 200
+    },
+    {
+      "id": "chk_dropped",
+      "type": "condition",
+      "label": "表掉了吗？",
+      "params": {
+        "var": "gauge_dropped",
+        "op": "truthy",
+        "value": ""
+      },
+      "x": 720,
+      "y": 200
+    },
+    {
+      "id": "un_close",
+      "type": "const_calsys_uninstall",
+      "label": "上位机合龙",
+      "params": {
+        "action": "1"
+      },
+      "x": 940,
+      "y": 120
+    },
+    {
+      "id": "r_ok",
+      "type": "set_variable",
+      "label": "结果：拆表完成",
+      "params": {
+        "var": "uninstall_result",
+        "op": "set",
+        "value": "ok"
+      },
+      "x": 1160,
+      "y": 120
+    },
+    {
+      "id": "r_human",
+      "type": "set_variable",
+      "label": "结果：需要人工",
+      "params": {
+        "var": "uninstall_result",
+        "op": "set",
+        "value": "human"
+      },
+      "x": 940,
+      "y": 300
+    },
+    {
+      "id": "r_fail",
+      "type": "set_variable",
+      "label": "结果：拆表失败",
+      "params": {
+        "var": "uninstall_result",
+        "op": "set",
+        "value": "fail"
+      },
+      "x": 1160,
+      "y": 420
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "set_live_un",
+      "target": "un_free",
+      "when": "default"
+    },
+    {
+      "id": "e2",
+      "source": "un_free",
+      "target": "do_uninstall",
+      "when": "success"
+    },
+    {
+      "id": "e3",
+      "source": "do_uninstall",
+      "target": "chk_dropped",
+      "when": "success"
+    },
+    {
+      "id": "e4",
+      "source": "chk_dropped",
+      "target": "un_close",
+      "when": "false"
+    },
+    {
+      "id": "e5",
+      "source": "un_close",
+      "target": "r_ok",
+      "when": "success"
+    },
+    {
+      "id": "e6",
+      "source": "chk_dropped",
+      "target": "r_human",
+      "when": "true"
+    },
+    {
+      "id": "e8",
+      "source": "un_free",
+      "target": "r_human",
+      "when": "failure"
+    },
+    {
+      "id": "e9",
+      "source": "un_close",
+      "target": "r_human",
+      "when": "failure"
+    },
+    {
+      "id": "e10",
+      "source": "do_uninstall",
+      "target": "r_fail",
+      "when": "failure"
+    }
+  ],
+  "context_vars": {}
+}

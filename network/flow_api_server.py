@@ -178,6 +178,8 @@ def _load_kaiao_flow_adapter():
         # 编辑器也必须改这一份，否则界面上改了点位而机器人用的还是另一份。
         "poses_project": "KAIAO",
         "poses_config_dir": os.path.join(_REPO_ROOT, "programs", "KAIAO"),
+        # 走廊中间点与点位同一份 KAIAO robot_config，避免 FLOW 精简配置里看不见、两套参数漂移。
+        "waypoint_config_key": "kaiao_waypoint",
         "run_control": {
             "hint": (
                 "PROCESS_BEGINS / PAUSED / ENDED 控制流程开关。"
@@ -248,6 +250,10 @@ def _load_const_flow_adapter():
         "local_flows_dir": os.path.join(_REPO_ROOT, "programs", "CONST_FLOW", "flows"),
         "project_node_schemas": node_handlers.NODE_TYPE_SCHEMAS,
         "common_nodes": node_handlers.COMMON_NODES,
+        # 处理器仍注册着（旧流程图能跑），只是不希望有人再拖它到新图上，
+        # 理由见 node_handlers.HIDDEN_NODE_TYPES 的说明
+        "hidden_node_types": node_handlers.HIDDEN_NODE_TYPES,
+        "graph_validator": node_handlers.validate_graph,
         "known_handler_types": (
             list(node_handlers.NODE_TYPE_SCHEMAS.keys()) + list(node_handlers.COMMON_NODES)
         ),
@@ -359,6 +365,32 @@ def _disable_other_enabled_flows(adapter: Dict[str, Any], keep_id: str) -> List[
 
 def _read_flow(adapter: Dict[str, Any], flow_id: str) -> Optional[Dict[str, Any]]:
     return _store_load_flow(flow_id, adapter["local_flows_dir"], _EXTERNAL_FLOWS_DIR)
+
+
+#: 保存时不能丢的元信息字段。role 尤其要紧：它标记一张图是子流程还是可独立运行的
+#: 入口，丢了会被当成入口，导致单入口项目报"同时激活了多份流程"而跑不起来。
+_META_FIELDS = ("id", "name", "description", "role")
+
+
+def _keep_meta_fields(adapter: Dict[str, Any], flow_id: str, graph: Dict[str, Any]):
+    """
+    客户端没带元信息字段时，从磁盘上的旧版本补回来。
+
+    前端已经会透传这些字段，这里是第二道保险：导入流程包、第三方脚本直接 POST
+    这类路径未必带全，而丢一次 role 的代价是现场主流程起不来。
+    """
+    if not isinstance(graph, dict):
+        return
+    missing = [f for f in _META_FIELDS if f not in graph]
+    if not missing:
+        return
+    old = _read_flow(adapter, flow_id)
+    if not isinstance(old, dict):
+        return
+    for field in missing:
+        if field in old:
+            graph[field] = old[field]
+            logger.info(_LOG, f"流程 '{flow_id}' 保存时补回元信息字段 {field}")
 
 
 def _write_flow(adapter: Dict[str, Any], flow_id: str, graph: Dict[str, Any]) -> str:
@@ -551,6 +583,129 @@ def _write_robot_config(project: str, cfg: Dict[str, Any]) -> str:
     except Exception as e:  # noqa: BLE001
         logger.warning(_LOG, f"配置已写入但编辑器进程 reload_config 失败: {e}")
     logger.info(_LOG, f"[{project}] robot_config 已保存 -> {path}")
+    return path
+
+
+def _waypoint_schema_bundle():
+    from programs.KAIAO.constants import (
+        KAIAO_WAYPOINT_FIELDS,
+        KAIAO_WAYPOINT_INTRO,
+        KAIAO_WAYPOINT_KEY,
+        kaiao_waypoint_comments,
+        kaiao_waypoint_defaults,
+        merge_kaiao_waypoint_config,
+    )
+    return {
+        "key": KAIAO_WAYPOINT_KEY,
+        "intro": KAIAO_WAYPOINT_INTRO,
+        "fields": KAIAO_WAYPOINT_FIELDS,
+        "defaults": kaiao_waypoint_defaults(),
+        "comments": kaiao_waypoint_comments(),
+        "merge": merge_kaiao_waypoint_config,
+    }
+
+
+def _read_waypoint_config(adapter: Optional[Dict[str, Any]], project: str) -> Optional[Dict[str, Any]]:
+    """
+    读走廊中间点段。KAIAO_FLOW 与点位相同：外部 /config 优先，否则 programs/KAIAO。
+    """
+    key = (adapter or {}).get("waypoint_config_key")
+    if not key:
+        return None
+    bundle = _waypoint_schema_bundle()
+    found_path = _pose_config_path(adapter, project)
+    raw: Dict[str, Any] = {}
+    _, config_dir = _poses_target(adapter, project)
+    for path in (_EXTERNAL_ROBOT_CONFIG, os.path.join(config_dir, "robot_config.json")):
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(_LOG, f"读取走廊导航参数失败 {path}: {e}")
+            continue
+        section = cfg.get(key)
+        if isinstance(section, dict):
+            raw = section
+            found_path = path
+            break
+    values = bundle["merge"](raw)
+    return {
+        "key": key,
+        "path": found_path,
+        "intro": bundle["intro"],
+        "schema": bundle["fields"],
+        "values": values,
+    }
+
+
+def _validate_waypoint_values(values: Any, schema: List[Dict[str, Any]]) -> List[str]:
+    errors: List[str] = []
+    if not isinstance(values, dict):
+        return ["走廊导航参数必须是对象"]
+    by_key = {f["key"]: f for f in schema}
+    for key, field in by_key.items():
+        if key not in values:
+            continue
+        val = values[key]
+        ftype = field.get("type")
+        label = field.get("label") or key
+        if ftype == "number":
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                errors.append(f"{label}（{key}）必须是数字")
+        elif ftype == "string_list":
+            if not isinstance(val, list) or not all(isinstance(x, str) and x.strip() for x in val):
+                errors.append(f"{label}（{key}）必须是非空字符串数组，例如 [\"shelf0_3\",\"shelf1_3\"]")
+        elif ftype == "json":
+            if not isinstance(val, list):
+                errors.append(f"{label}（{key}）必须是 JSON 数组")
+    return errors
+
+
+def _write_waypoint_config(
+    adapter: Optional[Dict[str, Any]],
+    project: str,
+    values: Dict[str, Any],
+) -> str:
+    """只改 kaiao_waypoint 段，其余配置原样保留。写入点位同一文件。"""
+    bundle = _waypoint_schema_bundle()
+    key = (adapter or {}).get("waypoint_config_key") or bundle["key"]
+    path = _pose_config_path(adapter, project)
+    cfg: Dict[str, Any] = {}
+    indent = 4
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        indent = _detect_json_indent(path)
+        backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        shutil.copy2(path, backup_path)
+        logger.info(_LOG, f"保存走廊导航参数前备份: {backup_path}")
+
+    current = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
+    merged = bundle["merge"](current)
+    for field in bundle["fields"]:
+        fname = field["key"]
+        if fname in values:
+            merged[fname] = values[fname]
+    section: Dict[str, Any] = {
+        "_comment": bundle["intro"],
+        "_comments": bundle["comments"],
+    }
+    for field in bundle["fields"]:
+        section[field["key"]] = merged[field["key"]]
+    cfg[key] = section
+
+    target_dir = os.path.dirname(path)
+    os.makedirs(target_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_dump_config_json(cfg, indent))
+    try:
+        from infrastructure.config_loader import reload_config
+        reload_config()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(_LOG, f"走廊导航参数已写入但 reload_config 失败: {e}")
+    logger.info(_LOG, f"[{project}] 走廊导航参数已保存 -> {path} 的 {key} 段")
     return path
 
 
@@ -770,6 +925,30 @@ def _live_current_pose(robot_id: str) -> Dict[str, Any]:
         _close_live_robot(robot)
 
 
+def _validate_graph(graph: Dict[str, Any], adapter: Dict[str, Any]) -> List[str]:
+    """通用结构校验 + 项目自定义校验（adapter 可选提供 graph_validator）。"""
+    errors = validate_flow_graph(graph, known_handler_types=adapter["known_handler_types"])
+    validator = adapter.get("graph_validator")
+    if validator:
+        try:
+            errors = errors + list(validator(graph) or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.error(_LOG, f"项目自定义校验异常: {exc}")
+    return errors
+
+
+def _flow_ids(adapter: Dict[str, Any]) -> List[str]:
+    """本项目现有的流程图 id，供「调用子流程」节点做下拉。"""
+    ids = []
+    for d in (adapter.get("local_flows_dir"), _EXTERNAL_FLOWS_DIR):
+        if not d or not os.path.isdir(d):
+            continue
+        for fn in os.listdir(d):
+            if fn.endswith(".json") and fn[:-5] not in ids:
+                ids.append(fn[:-5])
+    return ids
+
+
 def _node_types_with_dynamic_options(project: str, adapter: Dict[str, Any]) -> Dict[str, Any]:
     """
     组装返回给编辑器的节点 schema：按来源打上 scope 标记，并把"选项来自实时配置"
@@ -805,12 +984,18 @@ def _node_types_with_dynamic_options(project: str, adapter: Dict[str, Any]) -> D
                 schema["project"] = adapter.get("display_name", project)
             schemas[name] = schema
 
+    # 处理器还注册着（旧流程图要能跑），但不希望有人再拖到新图上的节点
+    for name in (adapter.get("hidden_node_types") or []):
+        schemas.pop(name, None)
+
     option_sources = {
         "poses": sorted((_read_poses(project, adapter).get("poses") or {}).keys()),
         "steps": list(adapter.get("step_options") or []),
         "robots": list(adapter.get("robot_options") or []),
         "services": list(adapter.get("service_options") or []),
         "commands": list(adapter.get("command_options") or []),
+        # 「调用子流程」的可选项：本项目已有的流程图，省得手敲 flow_id 敲错
+        "flows": sorted(_flow_ids(adapter)),
     }
 
     for schema in schemas.values():
@@ -1690,7 +1875,11 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                     return self._send_json(_forward_command("GET_TASK_STATE"))
 
                 if len(parts) == 2 and parts[1] == "robot-config":
-                    return self._send_json(_read_robot_config(project))
+                    payload = _read_robot_config(project)
+                    wp = _read_waypoint_config(adapter, project)
+                    if wp:
+                        payload["waypoint"] = wp
+                    return self._send_json(payload)
 
                 if len(parts) == 2 and parts[1] == "export":
                     pack = _build_flow_pack(adapter, project)
@@ -1772,11 +1961,11 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                     })
 
                 if len(parts) == 4 and parts[3] == "validate":
-                    errors = validate_flow_graph(graph, known_handler_types=adapter["known_handler_types"])
+                    errors = _validate_graph(graph, adapter)
                     return self._send_json({"success": len(errors) == 0, "errors": errors})
 
                 if len(parts) == 4 and parts[3] == "dryrun":
-                    errors = validate_flow_graph(graph, known_handler_types=adapter["known_handler_types"])
+                    errors = _validate_graph(graph, adapter)
                     if errors:
                         return self._send_json({"success": False, "message": "流程校验未通过，无法演练", "errors": errors}, 400)
                     timeout = float(body.get("timeout", 60.0))
@@ -1803,9 +1992,10 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                     return
 
                 if len(parts) == 3:  # 保存
-                    errors = validate_flow_graph(graph, known_handler_types=adapter["known_handler_types"])
+                    errors = _validate_graph(graph, adapter)
                     if errors:
                         return self._send_json({"success": False, "message": "流程校验未通过，未保存", "errors": errors}, 400)
+                    _keep_meta_fields(adapter, flow_id, graph)
                     saved_path = _write_flow(adapter, flow_id, graph)
                     if graph.get("enabled") and adapter.get("exclusive_enabled_flow"):
                         _disable_other_enabled_flows(adapter, flow_id)
@@ -1839,11 +2029,33 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                 if not isinstance(cfg, dict):
                     return self._send_json(
                         {"success": False, "message": "配置必须是 JSON 对象"}, 400)
+                wp_key = (adapter or {}).get("waypoint_config_key")
+                waypoint = body.get("waypoint") if isinstance(body.get("waypoint"), dict) else None
+                if wp_key and wp_key in cfg:
+                    extracted = cfg.pop(wp_key)
+                    if waypoint is None and isinstance(extracted, dict):
+                        waypoint = extracted
+                if waypoint is not None:
+                    if not wp_key:
+                        return self._send_json(
+                            {"success": False, "message": "本项目没有走廊导航参数段，请不要提交 waypoint"}, 400)
+                    bundle = _waypoint_schema_bundle()
+                    errors = _validate_waypoint_values(waypoint, bundle["fields"])
+                    if errors:
+                        return self._send_json(
+                            {"success": False, "message": "走廊导航参数校验未通过，未保存",
+                             "errors": errors}, 400)
                 saved_path = _write_robot_config(project, cfg)
+                wp_path = None
+                if waypoint is not None:
+                    wp_path = _write_waypoint_config(adapter, project, waypoint)
+                msg = ("配置已保存。正在运行的 main.py 仍用启动时加载的旧配置，"
+                       "需要发送 RESET_SYSTEM 或重启主程序后才会生效。")
+                if wp_path and wp_path != saved_path:
+                    msg += f" 走廊导航参数写在 {wp_path}。"
                 return self._send_json({
-                    "success": True, "path": saved_path,
-                    "message": ("配置已保存。正在运行的 main.py 仍用启动时加载的旧配置，"
-                                "需要发送 RESET_SYSTEM 或重启主程序后才会生效。"),
+                    "success": True, "path": saved_path, "waypoint_path": wp_path,
+                    "message": msg,
                 })
 
             # 控制"真实"流程：转发到业务命令端口（不经过本服务的机器人连接）
@@ -1883,7 +2095,10 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Internal Server Error: {e}")
 
     def log_message(self, format, *args):  # noqa: A002
-        logger.info(_LOG, "HTTP请求: " + (format % args))
+        msg = format % args
+        if any(p in msg for p in ("/api/console", "/api/mock-rosbridge")):
+            return
+        logger.info(_LOG, "HTTP请求: " + msg)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

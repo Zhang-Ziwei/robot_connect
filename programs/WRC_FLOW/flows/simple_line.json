@@ -254,6 +254,136 @@
       },
       "x": 19,
       "y": 89
+    },
+    {
+      "id": "parallel_17",
+      "type": "parallel",
+      "label": "并行执行",
+      "params": {
+        "branches": [
+          "send_operation_21",
+          "send_operation_22"
+        ]
+      },
+      "x": 91,
+      "y": 1085
+    },
+    {
+      "id": "send_operation_21",
+      "type": "send_operation",
+      "label": "发送操作动作",
+      "params": {
+        "call_type": "action",
+        "timeout": 1200,
+        "service": "robot_task",
+        "task": "safas",
+        "robot_id": "robot_a"
+      },
+      "x": 278,
+      "y": 998
+    },
+    {
+      "id": "send_operation_22",
+      "type": "send_operation",
+      "label": "发送操作动作",
+      "params": {
+        "call_type": "action",
+        "timeout": 1200,
+        "robot_id": "robot_b"
+      },
+      "x": 265,
+      "y": 1271
+    },
+    {
+      "id": "noop_25",
+      "type": "noop",
+      "label": "占位/汇合点",
+      "params": {},
+      "x": 1433,
+      "y": 1281
+    },
+    {
+      "id": "navigate_27",
+      "type": "navigate",
+      "label": "导航到点位",
+      "params": {
+        "skip_if_at_pose": true,
+        "timeout": 180,
+        "pose": "P1",
+        "robot_id": "robot_a"
+      },
+      "x": 925,
+      "y": 933
+    },
+    {
+      "id": "navigate_28",
+      "type": "navigate",
+      "label": "导航到点位",
+      "params": {
+        "skip_if_at_pose": true,
+        "timeout": 180,
+        "pose": "P1",
+        "robot_id": "robot_a"
+      },
+      "x": 504,
+      "y": 1001
+    },
+    {
+      "id": "plc_action_32",
+      "type": "plc_action",
+      "label": "PLC/传送带动作",
+      "params": {
+        "action": "forward",
+        "wait_done": true,
+        "timeout": 60
+      },
+      "x": 1358,
+      "y": 1493
+    },
+    {
+      "id": "parallel_1",
+      "type": "parallel",
+      "label": "并行执行",
+      "params": {
+        "branches": [
+          "navigate_27",
+          "send_operation_2"
+        ]
+      },
+      "x": 712,
+      "y": 988
+    },
+    {
+      "id": "send_operation_2",
+      "type": "send_operation",
+      "label": "发送操作动作",
+      "params": {
+        "call_type": "action",
+        "timeout": 1200
+      },
+      "x": 908,
+      "y": 1093
+    },
+    {
+      "id": "navigate_3",
+      "type": "navigate",
+      "label": "导航到点位",
+      "params": {
+        "skip_if_at_pose": true,
+        "timeout": 180
+      },
+      "x": 1140,
+      "y": 1099
+    },
+    {
+      "id": "noop_4",
+      "type": "noop",
+      "label": "占位/汇合点",
+      "params": {
+        "join": "all"
+      },
+      "x": 1362,
+      "y": 965
     }
   ],
   "edges": [
@@ -370,6 +500,78 @@
       "source": "wait_for_command_1",
       "target": "c_destack",
       "when": "success"
+    },
+    {
+      "id": "e_1788859851072",
+      "source": "send_operation_21",
+      "target": "navigate_28",
+      "when": "success"
+    },
+    {
+      "id": "e_1788859866469",
+      "source": "send_operation_22",
+      "target": "noop_25",
+      "when": "success"
+    },
+    {
+      "id": "e_1788860038727",
+      "source": "noop_25",
+      "target": "plc_action_32",
+      "when": "default"
+    },
+    {
+      "id": "e_par_parallel_17_send_operation_21",
+      "source": "parallel_17",
+      "target": "send_operation_21",
+      "when": "branch"
+    },
+    {
+      "id": "e_par_parallel_17_send_operation_22",
+      "source": "parallel_17",
+      "target": "send_operation_22",
+      "when": "branch"
+    },
+    {
+      "id": "e_1788863210119",
+      "source": "navigate_28",
+      "target": "parallel_1",
+      "when": "success"
+    },
+    {
+      "id": "e_1788863213624",
+      "source": "parallel_1",
+      "target": "navigate_27",
+      "when": "branch"
+    },
+    {
+      "id": "e_1788863222227",
+      "source": "parallel_1",
+      "target": "send_operation_2",
+      "when": "branch"
+    },
+    {
+      "id": "e_1788863230325",
+      "source": "send_operation_2",
+      "target": "navigate_3",
+      "when": "success"
+    },
+    {
+      "id": "e_1788863240082",
+      "source": "navigate_27",
+      "target": "noop_4",
+      "when": "success"
+    },
+    {
+      "id": "e_1788863242491",
+      "source": "navigate_3",
+      "target": "noop_4",
+      "when": "success"
+    },
+    {
+      "id": "e_1788863247106",
+      "source": "noop_4",
+      "target": "noop_25",
+      "when": "default"
     }
   ]
 }

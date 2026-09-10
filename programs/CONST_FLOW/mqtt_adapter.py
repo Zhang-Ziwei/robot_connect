@@ -7,6 +7,7 @@ calsysId 发现一次后一直沿用回传值。
 
 from __future__ import annotations
 
+import json
 import random
 import threading
 import time
@@ -25,6 +26,21 @@ _LOG = "CONST_MQTT"
 
 def new_request_id() -> str:
     return f"{random.getrandbits(64):016x}"
+
+
+def station_seq_of(station: Optional[Dict[str, Any]], default: int = 0) -> int:
+    """上位机工位序号：规范字段是 stationSeq，兼容 sequenceNumber / sequence。"""
+    if not station:
+        return default
+    raw = station.get("stationSeq")
+    if raw is None or raw == "":
+        raw = station.get("sequenceNumber")
+    if raw is None or raw == "":
+        raw = station.get("sequence")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 def load_mqtt_config() -> Dict[str, Any]:
@@ -69,6 +85,7 @@ class ConSTMqttAdapter:
 
         self._calsys_live: Dict[str, Any] = {}
         self._calsys_live_event = threading.Event()
+        self._live_fp = None
         self._end_notify: Optional[Dict[str, Any]] = None
         self._end_event = threading.Event()
         self._dut_by_station: Dict[str, Dict[str, Any]] = {}
@@ -131,9 +148,13 @@ class ConSTMqttAdapter:
 
     def set_status(self, status: str, station_seq: Optional[int] = None):
         with self._lock:
+            old = (self._live_status, self._station_seq)
             self._live_status = status
             if station_seq is not None:
                 self._station_seq = int(station_seq)
+            new = (self._live_status, self._station_seq)
+        if old != new:
+            logger.info(_LOG, f"机器人状态变为 {new[0]} stationSeq={new[1]}")
 
     def call_human(self, reason: str):
         with self._lock:
@@ -164,11 +185,16 @@ class ConSTMqttAdapter:
             "requestId": new_request_id(),
             "data": dict(self.robot_info),
         }
+        logger.info(_LOG, "发送上位机发现 %s" % json.dumps(payload.get("data"), ensure_ascii=False))
         reply = self._client.request(
             "v1/ras/calsys/info", payload,
             timeout=timeout, retries=ConstTimeout.MQTT_RETRIES,
         )
         data = (reply or {}).get("data") or {}
+        if reply is None:
+            logger.warning(_LOG, "上位机发现无回复")
+        else:
+            logger.info(_LOG, "收到上位机发现 %s" % json.dumps(data, ensure_ascii=False))
         calsys_id = str(data.get("calsysId") or "")
         if not calsys_id:
             if self.calsys_id:
@@ -359,11 +385,17 @@ class ConSTMqttAdapter:
             return None
         payload = {"requestId": new_request_id(), "data": data}
         topic = f"v1/ras/calsys/{calsys_id}/{msg_type}"
-        return self._client.request(
+        logger.info(_LOG, "发送上位机 %s → %s %s" % (msg_type, topic, json.dumps(data, ensure_ascii=False)))
+        reply = self._client.request(
             topic, payload,
             timeout=ConstTimeout.MQTT_REPLY if timeout is None else timeout,
             retries=ConstTimeout.MQTT_RETRIES,
         )
+        if reply is None:
+            logger.warning(_LOG, "上位机无回复 %s topic=%s" % (msg_type, topic))
+        else:
+            logger.info(_LOG, "收到上位机 %s %s" % (msg_type, json.dumps(reply, ensure_ascii=False)))
+        return reply
 
     def _heartbeat_loop(self):
         while not self._hb_stop.is_set():
@@ -420,6 +452,7 @@ class ConSTMqttAdapter:
 
     def _on_robot_info_query(self, topic: str, payload: Dict[str, Any]):  # noqa: ARG002
         request_id = payload.get("requestId") or new_request_id()
+        logger.info(_LOG, "收到上位机查询机器人信息 requestId=%s" % request_id)
         self._client.publish(
             "v1/ras/robot/info_reply",
             {"requestId": request_id, "data": dict(self.robot_info)},
@@ -430,11 +463,31 @@ class ConSTMqttAdapter:
         calsys_id = str(data.get("calsysId") or "")
         if self.calsys_id and calsys_id and calsys_id != self.calsys_id:
             return
+        fp = (
+            bool(data.get("isRunning")),
+            bool(data.get("isPendingConfirm")),
+            tuple(
+                (station_seq_of(s), s.get("robotStationStatus"), s.get("isEnabled"))
+                for s in (data.get("stations") or [])
+            ),
+        )
         with self._lock:
             if calsys_id and not self.calsys_id:
                 self.calsys_id = calsys_id
             self._calsys_live = data
+            changed = fp != self._live_fp
+            self._live_fp = fp
         self._calsys_live_event.set()
+        if changed:
+            stations = [
+                "%s:%s" % (station_seq_of(s), s.get("robotStationStatus"))
+                for s in (data.get("stations") or []) if s.get("isEnabled")
+            ]
+            logger.info(
+                _LOG,
+                "检定系统状态变化 isRunning=%s isPendingConfirm=%s stations=%s"
+                % (data.get("isRunning"), data.get("isPendingConfirm"), stations),
+            )
 
     def _on_dutinfo_notify(self, topic: str, payload: Dict[str, Any]):  # noqa: ARG002
         data = payload.get("data") or {}
@@ -444,6 +497,7 @@ class ConSTMqttAdapter:
         with self._lock:
             self._dut_by_station[seq] = data
         self._dut_event(seq).set()
+        logger.info(_LOG, "收到识别/检漏通知 %s" % json.dumps(data, ensure_ascii=False))
 
     def _on_end_notify(self, topic: str, payload: Dict[str, Any]):  # noqa: ARG002
         data = payload.get("data") or {}
@@ -453,3 +507,4 @@ class ConSTMqttAdapter:
         with self._lock:
             self._end_notify = data
         self._end_event.set()
+        logger.info(_LOG, "收到检定结束通知 %s" % json.dumps(data, ensure_ascii=False))

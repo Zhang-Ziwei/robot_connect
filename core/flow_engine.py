@@ -61,11 +61,13 @@ FlowEngine 把"流程骨架"（先做什么、什么并行、什么等待、失�
     condition       —— 按 params.{var,op,value} 判定 true/false，走对应出边
     set_variable    —— 把 params.value（支持模板）写入 context[params.var]
     delay           —— 等待 params.seconds 秒（每 0.2s 检查一次 stop_event，可被及时打断）
-    parallel        —— 按 params.branches（节点 id 列表）各起一个线程并行执行子链，
-                        params.join = "all"（默认，全部成功才算成功）或 "any"
+    parallel        —— 并行分叉：从本节点拉出的每条边都是一条独立线程。
+                        不汇合则各支路各自跑完；多条支路连到同一个 noop/汇合点时，
+                        在汇合点用 params.join=all/any 决定何时从汇合点只往下走一次。
+                        并行节点本身没有 success/failure 出边。
     wait_for_command—— 阻塞等待外部通过 SignalBus.fire() 触发的信号（比如 NEXT_STEP 命令）
     sub_flow        —— 调用另一个已注册的流程（通过构造函数传入的 flow_loader 获取）
-    noop            —— 什么都不做，仅用于图形上的占位/汇合点
+    noop            —— 占位；作为并行汇合点时用 params.join（all/any）
 
 需要项目自行注册 handler 的"动作类"节点类型（示例，实际类型名由项目自己定义）：
     navigate / send_operation / plc_action / update_step ...
@@ -94,6 +96,18 @@ _BUILTIN_TYPES = frozenset({
     "condition", "set_variable", "delay", "parallel", "wait_for_command",
     "sub_flow", "noop",
 })
+
+def _to_number(value):
+    """尽量把上下文里的值当数字用，返回 (数值, 是否成功)。"""
+    if isinstance(value, bool):
+        return (int(value), True)
+    if isinstance(value, (int, float)):
+        return (value, True)
+    try:
+        return (float(str(value).strip()), True)
+    except (TypeError, ValueError):
+        return (0, False)
+
 
 _CONDITION_OPS = {
     "==": lambda a, b: a == b,
@@ -384,7 +398,10 @@ class FlowEngine:
             node = FlowNode(id=n["id"], type=n["type"], label=n.get("label", ""), params=n.get("params", {}) or {})
             self._nodes[node.id] = node
         for e in self.graph.get("edges", []):
-            edge = FlowEdge(source=e["source"], target=e["target"], when=e.get("when", "default"))
+            when = e.get("when")
+            if when in (None, ""):
+                when = e.get("branch") or "default"
+            edge = FlowEdge(source=e["source"], target=e["target"], when=when)
             self._edges_by_source.setdefault(edge.source, []).append(edge)
     
     def validate(self) -> List[str]:
@@ -408,9 +425,12 @@ class FlowEngine:
                 elif node.params["op"] not in _CONDITION_OPS:
                     errors.append(f"condition 节点 {node_id} 的 op '{node.params['op']}' 不受支持")
             if node.type == "parallel":
-                branches = node.params.get("branches", [])
+                branches = self._parallel_branch_starts(node)
                 if not branches:
-                    errors.append(f"parallel 节点 {node_id} 的 params.branches 为空")
+                    errors.append(
+                        f"parallel 节点 {node_id} 没有分支：请从「分支」端口拉线，"
+                        "或在 params.branches 里填写起点节点 id"
+                    )
                 for b in branches:
                     if b not in node_ids:
                         errors.append(f"parallel 节点 {node_id} 的分支起点 '{b}' 不存在")
@@ -461,13 +481,24 @@ class FlowEngine:
             logger.error(_LOG, f"流程执行异常: {e}")
             return FlowResult(False, "error", f"流程执行异常: {e}", ctx.snapshot(), trace)
 
-    def run_chain(self, start_node_id: str, ctx: FlowContext, trace: List[NodeRecord],
-                max_steps: int = 10000) -> bool:
+    def run_chain(
+        self,
+        start_node_id: str,
+        ctx: FlowContext,
+        trace: List[NodeRecord],
+        max_steps: int = 10000,
+        stop_before: Optional[set] = None,
+        arrived_at: Optional[Dict[str, Optional[str]]] = None,
+    ) -> bool:
         """
         执行以 start_node_id 起始的一条子链，直到无路可走或失败无失败分支为止。
         供顶层 run() 与 parallel 节点的分支线程共用。返回 True/False 表示这条子链
         最终是否以"成功"状态收尾。
+
+        stop_before: 即将进入这些节点时停住（不执行），用于并行汇合点。
+        arrived_at: 若因汇合点停下，写入 {start_node_id: 汇合节点 id}。
         """
+        barriers = stop_before or set()
         current = start_node_id
         steps = 0
         success = True
@@ -478,8 +509,13 @@ class FlowEngine:
                 return False
             self._check_pause_stop()
             success, _ = self._execute_one(current, ctx, trace)
-            current = self._pick_next(current, success, ctx)
-        return success   
+            nxt = self._pick_next(current, success, ctx)
+            if success and nxt is not None and nxt in barriers:
+                if arrived_at is not None:
+                    arrived_at[start_node_id] = nxt
+                return True
+            current = nxt
+        return success 
 
     # ── 内部工具 ─────────────────────────────────────────────────────────────
 
@@ -546,6 +582,10 @@ class FlowEngine:
                     return e.target
             return None  # 没配对应分支，流程在此结束
 
+        # parallel 只负责分叉，出边全是支路起点，执行完后不顺着它们再走。
+        if node.type == "parallel":
+            return None
+
         # 普通节点：成功优先走 success/default，失败走 failure（没配则终止）
         if outcome:
             for e in edges:
@@ -571,8 +611,27 @@ class FlowEngine:
         # 槽位名拼 "{{p3_n}}_state"），用来表达"操作哪个具体槽位"这类动态分支逻辑，
         # 不需要为每个具体槽位单独画一份 condition/set_variable。
         var = ctx.render(var)
-        ctx.set(var, ctx.render(node.params.get("value")))
-        return True, f"{var} = {ctx.get(var)!r}"
+        value = ctx.render(node.params.get("value"))
+
+        # op 默认 set（纯赋值），没写 op 的旧流程图行为完全不变。
+        # add/sub 是为了让"重试计数"这类循环能在图上表达——否则每加一次 1
+        # 都得回 Python 里写个专用节点。
+        op = node.params.get("op") or "set"
+        if op == "set":
+            ctx.set(var, value)
+            return True, f"{var} = {ctx.get(var)!r}"
+
+        cur, ok_cur = _to_number(ctx.get(var))
+        delta, ok_delta = _to_number(value)
+        if not ok_cur or not ok_delta:
+            return False, (
+                f"{var} 做 {op} 运算需要数字，当前 {var}={ctx.get(var)!r}、value={value!r}"
+            )
+        result = cur + delta if op == "add" else cur - delta
+        if float(result).is_integer():
+            result = int(result)
+        ctx.set(var, result)
+        return True, f"{var} = {result!r}（{op} {delta!r}）"
 
     def _builtin_delay(self, node: FlowNode, ctx: FlowContext) -> (bool, str):
         seconds = float(node.params.get("seconds", 0))
@@ -656,24 +715,82 @@ class FlowEngine:
         finally:
             self._mark_waiting(event_name, -1)
 
+    def _parallel_branch_starts(self, node: FlowNode) -> List[str]:
+        """并行出边即支路；没有出边时才回退到旧的 params.branches。不存在的 id 丢弃。"""
+        starts: List[str] = []
+        for e in self._edges_by_source.get(node.id, []):
+            if e.target in self._nodes and e.target not in starts:
+                starts.append(e.target)
+        if starts:
+            return starts
+        raw = node.params.get("branches") or []
+        if isinstance(raw, str):
+            raw = [part.strip() for part in raw.strip("[]").replace('"', "").split(",") if part.strip()]
+        for b in raw:
+            bid = str(b)
+            if bid and bid in self._nodes and bid not in starts:
+                starts.append(bid)
+        return starts
+
+    def _join_mode_of(self, node_id: Optional[str]) -> str:
+        node = self._nodes.get(node_id) if node_id else None
+        mode = ((node.params or {}).get("join") if node else None) or "all"
+        return mode if mode in ("all", "any") else "all"
+
+    def _reachable_from(self, start_id: str) -> set:
+        seen = set()
+        stack = [start_id]
+        while stack:
+            nid = stack.pop()
+            if nid in seen or nid not in self._nodes:
+                continue
+            seen.add(nid)
+            for e in self._edges_by_source.get(nid, []):
+                if e.target not in seen:
+                    stack.append(e.target)
+        return seen
+
+    def _parallel_join_barriers(self, branch_starts: List[str]) -> set:
+        """多条支路都能走到、且有支路私有前驱的节点 = 图上的汇合点。"""
+        if len(branch_starts) < 2:
+            return set()
+        reaches = [self._reachable_from(b) for b in branch_starts]
+        shared = set.intersection(*reaches) if reaches else set()
+        if not shared:
+            return set()
+        barriers = set()
+        for src, edges in self._edges_by_source.items():
+            for e in edges:
+                if e.target in shared and src not in shared:
+                    barriers.add(e.target)
+        return barriers
+
     def _builtin_parallel(self, node: FlowNode, ctx: FlowContext) -> (bool, str):
-        branches: List[str] = node.params.get("branches", [])
-        join_mode = node.params.get("join", "all")
+        branches: List[str] = self._parallel_branch_starts(node)
         timeout = node.params.get("timeout")
+        barriers = self._parallel_join_barriers(branches)
 
         results: Dict[str, bool] = {}
-        sub_traces: Dict[str, List[NodeRecord]] = {}
+        arrived_at: Dict[str, Optional[str]] = {}
         lock = threading.Lock()
 
         def _run_branch(start_id: str):
             local_trace: List[NodeRecord] = []
+            local_arrived: Dict[str, Optional[str]] = {}
             try:
-                ok = self.run_chain(start_id, ctx, local_trace)
+                ok = self.run_chain(
+                    start_id, ctx, local_trace,
+                    stop_before=barriers, arrived_at=local_arrived,
+                )
             except FlowStopped:
                 ok = False
             with lock:
                 results[start_id] = ok
-                sub_traces[start_id] = local_trace
+                if start_id in local_arrived:
+                    arrived_at[start_id] = local_arrived[start_id]
+
+        if not branches:
+            return False, "parallel 没有分支起点"
 
         threads = [threading.Thread(target=_run_branch, args=(b,), daemon=True, name=f"flow-parallel-{b}")
                    for b in branches]
@@ -682,11 +799,27 @@ class FlowEngine:
         for t in threads:
             t.join(timeout=timeout)
 
-        if join_mode == "any":
-            success = any(results.get(b, False) for b in branches)
+        hits = [arrived_at[b] for b in branches if results.get(b) and arrived_at.get(b)]
+        join_id = hits[0] if hits and len(set(hits)) == 1 else None
+        join_mode = self._join_mode_of(join_id)
+
+        if join_id:
+            if join_mode == "any":
+                success = True
+            else:
+                success = all(results.get(b, False) for b in branches) and len(hits) == len(branches)
         else:
             success = all(results.get(b, False) for b in branches)
-        return success, f"并行分支结果: {results}"
+
+        if join_id and success:
+            join_ok = self.run_chain(join_id, ctx, [])
+            if not join_ok:
+                success = False
+
+        msg = f"并行分支结果: {results}"
+        if join_id:
+            msg += f"；汇合({join_mode})后继续 {join_id}"
+        return success, msg
 
     def _builtin_sub_flow(self, node: FlowNode, ctx: FlowContext) -> (bool, str):
         if self.flow_loader is None:
@@ -748,6 +881,9 @@ BUILTIN_NODE_TYPE_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "category": "控制流",
         "fields": [
             {"name": "var", "type": "text", "label": "变量名", "required": True},
+            {"name": "op", "type": "select", "label": "运算方式",
+             "options": ["set", "add", "sub"], "default": "set",
+             "hint": "set=直接赋值；add/sub=在原值上加减，用来在图上做重试计数这类循环"},
             {"name": "value", "type": "text", "label": "值（支持 {{var}} 模板）"},
         ],
         "outputs": ["default"],
@@ -762,11 +898,9 @@ BUILTIN_NODE_TYPE_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "label": "并行执行",
         "category": "控制流",
         "fields": [
-            {"name": "branches", "type": "json", "label": "并行分支起点（节点 id 数组）", "required": True},
-            {"name": "join", "type": "select", "label": "汇合策略", "options": ["all", "any"], "default": "all"},
-            {"name": "timeout", "type": "number", "label": "超时秒数（可空）"},
+            {"name": "timeout", "type": "number", "label": "等待各支路结束的超时秒数（可空）"},
         ],
-        "outputs": ["success", "failure"],
+        "outputs": ["default"],
     },
     "wait_for_command": {
         "label": "等待外部命令",
@@ -788,8 +922,23 @@ BUILTIN_NODE_TYPE_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "sub_flow": {
         "label": "调用子流程",
         "category": "控制流",
-        "fields": [{"name": "flow", "type": "text", "label": "子流程 flow_id", "required": True}],
+        "fields": [
+            {"name": "flow", "type": "select", "label": "子流程", "required": True,
+             "options_source": "flows", "allow_free_text": True,
+             "hint": "子流程与父流程共享上下文变量；注意它的成功只代表图正常跑完，"
+                     "业务结果要靠约定变量传回（例如 install_result）"},
+        ],
         "outputs": ["success", "failure"],
     },
-    "noop": {"label": "占位/汇合点", "category": "控制流", "fields": [], "outputs": ["default"]},
+    "noop": {
+        "label": "占位/汇合点",
+        "category": "控制流",
+        "fields": [
+            {"name": "join", "type": "select", "label": "汇合策略",
+             "options": ["all", "any"], "default": "all",
+             "hint": "多条并行支路连到本节点时生效。all=全部到达且成功后继续；any=任一支路到达即可。"
+                     "不汇合就不要把支路连到这里。"},
+        ],
+        "outputs": ["default"],
+    },
 }

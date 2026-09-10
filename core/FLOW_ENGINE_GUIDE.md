@@ -89,12 +89,12 @@ Python 函数，只是从"写死的调用顺序"变成了"按需注册、按图�
 | 类型 | 参数（`params`） | 出边 `when` | 说明 |
 |---|---|---|---|
 | `noop` | 无 | `default` | 空节点/占位（常用作多路分支的汇合点） |
-| `set_variable` | `{var, value}` | `default` | 设置一个上下文变量；`var`/`value` 均支持 `{{tpl}}` |
+| `set_variable` | `{var, op, value}` | `default` | 设置一个上下文变量；`var`/`value` 均支持 `{{tpl}}`。`op` 默认 `set`（赋值），另有 `add`/`sub` 在原值上加减——图上做重试计数这类循环要用它，不填 `op` 的旧流程图行为不变 |
 | `delay` | `{seconds}` | `default` | 延时（可被暂停/停止打断） |
 | `condition` | `{var, op, value}` | `true` / `false` | 条件分支，`op` 支持 `== != > < >= <= in not_in truthy falsy` |
 | `parallel` | `{branches, join, timeout}` | `success` / `failure` | 并行执行多条子链路；`join`: `all`（默认，全部完成才算成功）/`any` |
 | `wait_for_command` | `{event_name, var_prefix, timeout, dryrun_params}` | `success` / `failure` | 阻塞等待外部信号（配合 `SignalBus`），超时或收到信号才继续。命令 params **原样**写入上下文（含嵌套 dict，可用 `{{box_initial_area.shelf_type}}`），同时再写一份 `{前缀}_{键}`；整包另存 `{前缀}_payload` / `cmd_payload`。`dryrun_params` 是演练时自动打进来的示例入参，可在编辑器弹窗里改。 |
-| `sub_flow` | `{flow}` | `success` / `failure` | 加载并运行另一份流程 JSON（子流程复用），`flow` 是目标 `flow_id` |
+| `sub_flow` | `{flow}` | `success` / `failure` | 加载并运行另一份流程 JSON，`flow` 从本项目已有流程里下拉选。父子共享上下文与 `extra`，子流程结束后变量写回父流程。**注意它的 `success` 只表示图正常跑完，不代表业务成功**——业务结果要靠约定变量传回（例：ConST 装表用 `install_result` 取 `ok`/`human`/`retry`） |
 
 ## 项目专属节点类型
 

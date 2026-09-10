@@ -84,6 +84,12 @@ class CONSTFlowHandler:
         return max(0, min(100, int(round(value))))
 
     def _on_node_event(self, node_id: str, status: str, record: NodeRecord):
+        # 等待/轮询/延时/条件在装表循环里会反复进出，不打节点级日志。
+        if record.type in (
+            "delay", "condition", "wait_signal",
+            "const_wait_calsys", "const_pick_station",
+        ):
+            return
         if status == "running":
             logger.info(_LOG, f"▶ 节点 {node_id}({record.type}) [{record.label}] 开始执行")
         else:

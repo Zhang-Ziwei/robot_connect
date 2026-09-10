@@ -1,0 +1,306 @@
+{
+  "id": "const_install_station",
+  "name": "单工位装表（重插循环 + 结局分派）",
+  "description": "导航到工位后反复尝试装表，识别/检漏不过就拆下来重插，超次数按坏表拆回后部料箱。装一次表、拆一次表的具体步骤分别在子流程 const_install_once / const_uninstall_once 里，这张图只管重试策略和三种结局的收尾。想改重插次数，改 chk_retry 节点的比较值即可。",
+  "role": "subflow",
+  "enabled": false,
+  "start": "nav_station",
+  "nodes": [
+    {
+      "id": "nav_station",
+      "type": "navigate",
+      "label": "导航到工位",
+      "params": {
+        "pose": "{{station_pose}}",
+        "timeout": 300
+      },
+      "x": 60,
+      "y": 280
+    },
+    {
+      "id": "init_retry",
+      "type": "set_variable",
+      "label": "重插次数清零",
+      "params": {
+        "var": "install_attempt",
+        "op": "set",
+        "value": 0
+      },
+      "x": 280,
+      "y": 280
+    },
+    {
+      "id": "try_install",
+      "type": "sub_flow",
+      "label": "装一次表",
+      "params": {
+        "flow": "const_install_once"
+      },
+      "x": 500,
+      "y": 280
+    },
+    {
+      "id": "chk_ok",
+      "type": "condition",
+      "label": "检漏通过了吗？",
+      "params": {
+        "var": "install_result",
+        "op": "==",
+        "value": "ok"
+      },
+      "x": 720,
+      "y": 280
+    },
+    {
+      "id": "mark_ok",
+      "type": "const_mark_installed",
+      "label": "记为已装表",
+      "params": {},
+      "x": 960,
+      "y": 180
+    },
+    {
+      "id": "chk_human",
+      "type": "condition",
+      "label": "需要人工吗？",
+      "params": {
+        "var": "install_result",
+        "op": "==",
+        "value": "human"
+      },
+      "x": 720,
+      "y": 450
+    },
+    {
+      "id": "human_wait",
+      "type": "const_call_human",
+      "label": "呼叫人工并等待处理",
+      "params": {
+        "reason": "gauge_dropped"
+      },
+      "x": 960,
+      "y": 450
+    },
+    {
+      "id": "chk_retry",
+      "type": "condition",
+      "label": "还能再重插吗？（<2 次）",
+      "params": {
+        "var": "install_attempt",
+        "op": "<",
+        "value": 2
+      },
+      "x": 720,
+      "y": 620
+    },
+    {
+      "id": "bump_retry",
+      "type": "set_variable",
+      "label": "重插次数 +1",
+      "params": {
+        "var": "install_attempt",
+        "op": "add",
+        "value": 1
+      },
+      "x": 480,
+      "y": 620
+    },
+    {
+      "id": "set_extra_retry",
+      "type": "set_variable",
+      "label": "拆表参数：重插",
+      "params": {
+        "var": "uninstall_extra",
+        "op": "set",
+        "value": {
+          "reinstall": true
+        }
+      },
+      "x": 260,
+      "y": 620
+    },
+    {
+      "id": "pull_for_retry",
+      "type": "sub_flow",
+      "label": "拆下来准备重插",
+      "params": {
+        "flow": "const_uninstall_once"
+      },
+      "x": 60,
+      "y": 620
+    },
+    {
+      "id": "set_extra_bad",
+      "type": "set_variable",
+      "label": "拆表参数：按坏表拆回",
+      "params": {
+        "var": "uninstall_extra",
+        "op": "set",
+        "value": {
+          "is_passed": false
+        }
+      },
+      "x": 960,
+      "y": 620
+    },
+    {
+      "id": "pull_bad",
+      "type": "sub_flow",
+      "label": "超次数：拆回后部料箱",
+      "params": {
+        "flow": "const_uninstall_once"
+      },
+      "x": 1180,
+      "y": 620
+    },
+    {
+      "id": "consume",
+      "type": "const_consume_gauge",
+      "label": "料箱表数 -1",
+      "params": {},
+      "x": 1420,
+      "y": 380
+    },
+    {
+      "id": "chk_pull_human",
+      "type": "condition",
+      "label": "拆表要人工吗？",
+      "params": {
+        "var": "uninstall_result",
+        "op": "==",
+        "value": "human"
+      },
+      "x": 480,
+      "y": 450
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "nav_station",
+      "target": "init_retry",
+      "when": "success"
+    },
+    {
+      "id": "e2",
+      "source": "init_retry",
+      "target": "try_install",
+      "when": "default"
+    },
+    {
+      "id": "e3",
+      "source": "try_install",
+      "target": "chk_ok",
+      "when": "success"
+    },
+    {
+      "id": "e4",
+      "source": "try_install",
+      "target": "chk_ok",
+      "when": "failure"
+    },
+    {
+      "id": "e5",
+      "source": "chk_ok",
+      "target": "mark_ok",
+      "when": "true"
+    },
+    {
+      "id": "e6",
+      "source": "mark_ok",
+      "target": "consume",
+      "when": "default"
+    },
+    {
+      "id": "e7",
+      "source": "chk_ok",
+      "target": "chk_human",
+      "when": "false"
+    },
+    {
+      "id": "e8",
+      "source": "chk_human",
+      "target": "human_wait",
+      "when": "true"
+    },
+    {
+      "id": "e9",
+      "source": "human_wait",
+      "target": "consume",
+      "when": "default"
+    },
+    {
+      "id": "e10",
+      "source": "chk_human",
+      "target": "chk_retry",
+      "when": "false"
+    },
+    {
+      "id": "e11",
+      "source": "chk_retry",
+      "target": "bump_retry",
+      "when": "true"
+    },
+    {
+      "id": "e12",
+      "source": "bump_retry",
+      "target": "set_extra_retry",
+      "when": "default"
+    },
+    {
+      "id": "e13",
+      "source": "set_extra_retry",
+      "target": "pull_for_retry",
+      "when": "default"
+    },
+    {
+      "id": "e14",
+      "source": "pull_for_retry",
+      "target": "chk_pull_human",
+      "when": "success"
+    },
+    {
+      "id": "e15",
+      "source": "pull_for_retry",
+      "target": "chk_pull_human",
+      "when": "failure"
+    },
+    {
+      "id": "e16",
+      "source": "chk_retry",
+      "target": "set_extra_bad",
+      "when": "false"
+    },
+    {
+      "id": "e17",
+      "source": "set_extra_bad",
+      "target": "pull_bad",
+      "when": "default"
+    },
+    {
+      "id": "e18",
+      "source": "pull_bad",
+      "target": "consume",
+      "when": "success"
+    },
+    {
+      "id": "e19",
+      "source": "pull_bad",
+      "target": "consume",
+      "when": "failure"
+    },
+    {
+      "id": "e20",
+      "source": "chk_pull_human",
+      "target": "human_wait",
+      "when": "true"
+    },
+    {
+      "id": "e21",
+      "source": "chk_pull_human",
+      "target": "try_install",
+      "when": "false"
+    }
+  ],
+  "context_vars": {}
+}
