@@ -116,13 +116,36 @@ def _box_extra_params(
     return {"shelf_level": int(row)}
 
 
+_SHELF_NAV_RE = re.compile(rf"{KAIAOArea.SHELF}(\d+)_(\d+)$")
+
+
 def _shelf_side_from_nav(nav_area: str) -> Optional[int]:
     """
     从导航点名提取货架侧编号：shelf0_1 → 0，shelf1_3 → 1。
     非 shelf 点位（agv_car0_0 等）返回 None。
     """
-    m = re.fullmatch(rf"{KAIAOArea.SHELF}(\d+)_(\d+)", str(nav_area or ""))
+    m = _SHELF_NAV_RE.fullmatch(str(nav_area or ""))
     return int(m.group(1)) if m else None
+
+
+def _shelf_side_from_xy(x: float, y: float, radius: float = 0.28) -> Optional[int]:
+    """
+    按配置点位落点判断在 shelf0 还是 shelf1。
+    取半径内最近的 shelf*_ 点位；匹配不到返回 None。
+    """
+    best_d = float(radius)
+    hit = None
+    for side in range(4):
+        for col in range(8):
+            pose = get_nav_pose(f"{KAIAOArea.SHELF}{side}_{col}")
+            p = _first_xyqw(pose)
+            if p is None:
+                continue
+            d = math.hypot(float(x) - p[0], float(y) - p[1])
+            if d <= best_d:
+                best_d = d
+                hit = side
+    return hit
 
 
 def _same_level_movement(src: Dict[str, Any], dst: Dict[str, Any]) -> int:
@@ -368,12 +391,13 @@ _ADJUST_AFTER_DIRECT_NAV_S = 3.0
 #: split 导航各场景中间点步骤名（按插入顺序）；end_to_end 单独处理
 _SPLIT_MID_NAMES = {
     "end_to_side": ("平移中间点", "原地旋转"),
+    "end_to_side_agv": ("额外后退", "原地旋转", "向AGV平移回来"),
     "side_to_end": ("平移中间点", "原地旋转"),
     "side_to_end_clear": ("后退", "远离AGV平移", "原地旋转"),
     "side_to_side_carry": ("后退", "转向零件车", "目标前方接近", "转向目标"),
     "side_to_side_empty": ("后退",),
     "side_to_side": ("中间点",),
-    "side_to_side_same": ("后退", "对齐目标y"),
+    "side_to_side_same": ("后退", "平移"),
 }
 
 
@@ -730,6 +754,29 @@ class KAIAOHandler:
             for name in to_areas
         )
 
+    def _need_agv_to_col3(
+        self,
+        src_x: float,
+        src_y: float,
+        tgt_x: float,
+        tgt_y: float,
+        wp_cfg: Dict[str, Any],
+    ) -> bool:
+        """从 agv_car 去近 AGV 货架格（默认 shelf0_3 / shelf1_3）。"""
+        radius = float(wp_cfg.get("pose_match_radius", 0.28))
+        from_areas = wp_cfg.get("end_to_side_agv_from") or ["agv_car0_0"]
+        to_areas = wp_cfg.get("end_to_side_agv_to") or ["shelf0_3", "shelf1_3"]
+        src_hit = any(
+            _xy_near_pose(src_x, src_y, get_nav_pose(name), radius)
+            for name in from_areas
+        )
+        if not src_hit:
+            return False
+        return any(
+            _xy_near_pose(tgt_x, tgt_y, get_nav_pose(name), radius)
+            for name in to_areas
+        )
+
     def _prepend_intermediate_waypoint(
         self,
         robot: RobotController,
@@ -750,9 +797,11 @@ class KAIAOHandler:
             (waypoints, nav_case) 二元组：
                 'end_to_end'  — waypoints[0] 为原地旋转路点
                 'end_to_side' / 'side_to_end' — waypoints[0]=平移, [1]=原地旋转, 其后为目标
+                'end_to_side_agv' — agv→3号位：多退、旋转、向AGV平移回来
                 'side_to_end_clear' — 近 AGV 货架持箱去 agv_car：后退、远离平移、旋转
-                'side_to_side_carry' — 货架互搬有箱
-                'side_to_side_empty' — 货架互搬无箱：后退后直达
+                'side_to_side_same' — 同货架持箱：后退、平移到目标 y、再进格
+                'side_to_side_carry' — 两侧货架互搬有箱
+                'side_to_side_empty' — 两侧货架互搬无箱：后退后直达
                 'no_change'   — 无需中间点
         """
         if mode == 'skip':
@@ -799,13 +848,33 @@ class KAIAOHandler:
         retreat = float(wp_cfg.get("side_to_side_same_retreat_dx", 0.3))
         approach_d = float(wp_cfg.get("side_to_side_approach_dx", 0.4))
 
-        # 货架 → 货架（同侧/异侧同一套）：
-        #   有箱：后退 → 转向零件车 → 目标前方 0.4m → 转向目标 → 目标
-        #   无箱：后退 → 直达目标
+        # 货架 → 货架
+        #   同侧（shelf0_* ↔ shelf0_*，含换层/换列）：后退 → adjust → 沿走廊平移到目标 y → 前进
+        #   两侧（shelf0_* ↔ shelf1_*）：有箱走互搬；空手后退后直达
+        # 优先用点位落在哪一侧（与 same_level_movement 一致），匹配不到才退回朝向差
         if not is_src_end and not is_tgt_end:
             retreat_wp = _wp_retreat(src_x, src_y, src_qz, src_qw, retreat)
+            match_r = float(wp_cfg.get("pose_match_radius", 0.28))
+            src_side = _shelf_side_from_xy(src_x, src_y, match_r)
+            tgt_side = _shelf_side_from_xy(tgt_x, tgt_y, match_r)
+            if src_side is not None and tgt_side is not None:
+                same_shelf = src_side == tgt_side
+            else:
+                same_shelf = abs(angle_diff) < math.radians(threshold)
+            logger.info(
+                _LOG,
+                f"[{robot_id}] 货架→货架  src_side={src_side} tgt_side={tgt_side} "
+                f"same_shelf={same_shelf} yaw_diff={math.degrees(angle_diff):.1f}°",
+            )
+            if same_shelf:
+                if not self._is_holding_box(robot_id):
+                    logger.info(_LOG, f"[{robot_id}] 同货架且手上无箱：直达目标")
+                    return waypoints, 'no_change'
+                align_wp = _wp_at(float(retreat_wp[0]), tgt_y, src_yaw)
+                logger.info(_LOG, f"[{robot_id}] 同货架持箱：后退→平移到目标y→前进")
+                return [retreat_wp, align_wp] + waypoints, 'side_to_side_same'
             if not self._is_holding_box(robot_id):
-                logger.info(_LOG, f"[{robot_id}] 货架互搬且手上无箱：后退后直达目标")
+                logger.info(_LOG, f"[{robot_id}] 两侧货架互搬且手上无箱：后退后直达目标")
                 return [retreat_wp] + waypoints, 'side_to_side_empty'
             cc_yaw = self._area_yaw("component_car", default=math.pi / 2.0)
             rx, ry = float(retreat_wp[0]), float(retreat_wp[1])
@@ -816,7 +885,7 @@ class KAIAOHandler:
             rot_tgt = _wp_at(ax, ay, tgt_yaw)
             logger.info(
                 _LOG,
-                f"[{robot_id}] 货架互搬且手上有箱：后退→转向零件车→目标前{approach_d:.2f}m→转向目标",
+                f"[{robot_id}] 两侧货架互搬且手上有箱：后退→转向零件车→目标前{approach_d:.2f}m→转向目标",
             )
             return [retreat_wp, rot_cc, approach_wp, rot_tgt] + waypoints, 'side_to_side_carry'
 
@@ -873,6 +942,27 @@ class KAIAOHandler:
             )
             return [retreat_wp, shift_wp, rot_wp] + waypoints, 'side_to_end_clear'
 
+        # agv_car → shelf0_3 / shelf1_3：
+        # 比普通「目标正前方」多退 extra → adjust → 转向目标 → 向 AGV 平移 extra 回到正前方 → 目标
+        if (
+            is_src_end and not is_tgt_end
+            and self._need_agv_to_col3(src_x, src_y, tgt_x, tgt_y, wp_cfg)
+        ):
+            extra = float(wp_cfg.get("end_to_side_agv_extra_dy", 0.2))
+            away = self._away_from_agv_y_sign(src_y)
+            front_x, front_y = float(mid[0]), float(mid[1])
+            extra_y = front_y + away * extra
+            retreat_wp = _wp_at(front_x, extra_y, src_yaw)
+            angle_offset = float(wp_cfg.get("angle_offset_deg", 90.0))
+            rot_yaw = src_yaw + math.copysign(math.radians(angle_offset), angle_diff)
+            rot_wp = _wp_at(front_x, extra_y, rot_yaw)
+            align_wp = _wp_at(front_x, front_y, rot_yaw)
+            logger.info(
+                _LOG,
+                f"[{robot_id}] agv_car→近AGV货架格：多退{extra:.2f}m→转向目标→向AGV平移回来",
+            )
+            return [retreat_wp, rot_wp, align_wp] + waypoints, 'end_to_side_agv'
+
         # 端点↔货架：拆成「平移(朝向不变)」+「原地旋转 angle_offset_deg」
         nav_case = 'end_to_side' if is_src_end else 'side_to_end'
         angle_offset = float(wp_cfg.get("angle_offset_deg", 90.0))
@@ -925,9 +1015,11 @@ class KAIAOHandler:
             mid_send:
                 'split' — 分多次 Action（默认），每个中间点一次，最后一次发目标：
                     · end_to_side / side_to_end：平移 → 原地旋转 → 目标
+                    · end_to_side_agv：多退 → 原地旋转 → 向AGV平移回来 → 目标
                     · side_to_end_clear：后退 → 远离AGV平移 → 原地旋转 → 目标
+                    · side_to_side_same：后退 → 平移到目标y → 前进进格
                     · side_to_side_carry：后退 → 转向零件车 → 目标前0.4m → 转向目标 → 目标
-                    · side_to_side_empty：后退 → 目标
+                    · side_to_side_empty：两侧货架空手：后退 → 目标
                 'batch' — 中间点与目标在同一次 Action 一口气发送
                 （端点→端点原地旋转始终分两次，不受本参数影响）
 
@@ -969,12 +1061,13 @@ class KAIAOHandler:
         _CASE_DESC = {
             'end_to_end':  '端点→端点（先原地旋转180°）',
             'end_to_side': '端点→货架（平移→原地旋转→目标）',
+            'end_to_side_agv': 'agv_car→近AGV货架格（多退→旋转→向AGV平移回来→目标）',
             'side_to_end': '货架→端点（平移→原地旋转→目标）',
             'side_to_end_clear': '近AGV货架持箱→agv_car（后退→远离平移→旋转→目标）',
             'side_to_side': '货架→货架异侧（插入最近撤退点）',
-            'side_to_side_same': '货架→货架同侧（后退→对齐y→目标）',
-            'side_to_side_carry': '货架互搬有箱（后退→转向零件车→目标前→转向目标）',
-            'side_to_side_empty': '货架互搬无箱（后退→直达目标）',
+            'side_to_side_same': '同货架（后退→平移→前进）',
+            'side_to_side_carry': '两侧货架互搬有箱（后退→转向零件车→目标前→转向目标）',
+            'side_to_side_empty': '两侧货架互搬无箱（后退→直达目标）',
             'no_change':   '直接导航（无中间点）',
         }
         case_desc = _CASE_DESC.get(nav_case, nav_case)

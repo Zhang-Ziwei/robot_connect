@@ -86,8 +86,10 @@ COMPONENT_TYPES = (
     "black_joystick",
     "black_fan",
     "yellow_hinge",
-    "white_connector",
+    "white_support_assy",
     "wire_harness",
+    "white_support",
+    "white_iron_sheet",
 )
 
 # 单件重量 / 重箱阈值硬编码兜底。现场以 programs/KAIAO/robot_config.json → kaiao_component 为准。
@@ -205,7 +207,7 @@ KAIAO_WAYPOINT_FIELDS = [
         "group": "货架互搬 / 离架后退",
         "label": "离架后退距离 (m)",
         "default": 0.3,
-        "comment": "沿当前朝向反方向退入走廊的距离。货架互搬（有箱/无箱）以及近 AGV 格持箱去 agv_car 的第一步都用它。货架朝 +X 时 x 减小，朝 −X 时 x 增大。默认 0.30。校正 adjust_pose 发生在这个后退点到达之后。",
+        "comment": "沿当前朝向反方向退入走廊的距离。同货架持箱（换层/换列）的第一步，两侧货架互搬以及近 AGV 格持箱去 agv_car 也用它。货架朝 +X 时 x 减小，朝 −X 时 x 增大。默认 0.30。校正 adjust_pose 发生在这个后退点到达之后。",
     },
     {
         "key": "side_to_side_approach_dx",
@@ -213,7 +215,31 @@ KAIAO_WAYPOINT_FIELDS = [
         "group": "货架互搬 / 离架后退",
         "label": "有箱互搬：目标正前方距离 (m)",
         "default": 0.4,
-        "comment": "手上有箱、从一个货架格到另一个货架格：后退 → 转向零件车（+Y）→ 走到「目标点沿其朝向后退这么多」的位置（站在目标格正前方走廊里）→ 再转向目标进入。默认 0.40。空手互搬不用这项，后退后直达目标。",
+        "comment": "仅两侧货架互搬且手上有箱（shelf0 ↔ shelf1）：后退 → 转向零件车（+Y）→ 走到「目标点沿其朝向后退这么多」的位置 → 再转向目标进入。同货架换层/换列不走这条。默认 0.40。空手互搬不用这项，后退后直达目标。",
+    },
+    {
+        "key": "end_to_side_agv_extra_dy",
+        "type": "number",
+        "group": "AGV → 近 AGV 货架格",
+        "label": "agv 去 3 号位：额外后退 (m)",
+        "default": 0.2,
+        "comment": "从 agv_car 去 shelf0_3 / shelf1_3：原本退到目标正前方后，再沿走廊远离 AGV 多退这么多，然后 adjust、转向目标，再向 AGV 平移同样距离回到正前方，最后进目标点。默认 0.20。",
+    },
+    {
+        "key": "end_to_side_agv_from",
+        "type": "string_list",
+        "group": "AGV → 近 AGV 货架格",
+        "label": "该路径的起点",
+        "default": ["agv_car0_0"],
+        "comment": "起点靠近这些点位才走「多退再移回」。通常只有 agv_car0_0。从零件车去 3 号位仍用普通端点→货架。",
+    },
+    {
+        "key": "end_to_side_agv_to",
+        "type": "string_list",
+        "group": "AGV → 近 AGV 货架格",
+        "label": "该路径的终点货架格",
+        "default": ["shelf0_3", "shelf1_3"],
+        "comment": "终点靠近这些格才启用。对应 (0,*,3)/(1,*,3)。去其它货架格仍用普通平移+转 90°。",
     },
     {
         "key": "side_to_end_agv_clear_dy",

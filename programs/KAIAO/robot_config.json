@@ -94,10 +94,13 @@
             "angle_offset_deg": "货架与 agv_car / 零件车之间，平移到位后的原地旋转角，一般 90°。",
             "end_to_side_dx": "从端点去货架时中间平移点的 X 偏移（米）。",
             "end_to_side_dy": "从端点去货架时中间平移点的 Y 偏移（米），通常为 0。",
+            "end_to_side_agv_extra_dy": "从 agv_car 去 shelf0_3 / shelf1_3：比「目标正前方」再沿走廊远离 AGV 多退这么多，adjust 并转向后再向 AGV 平移同样距离回来。",
+            "end_to_side_agv_from": "该多退路径的起点，通常只有 agv_car0_0。",
+            "end_to_side_agv_to": "该多退路径的终点货架格，默认 shelf0_3 / shelf1_3。",
             "side_to_end_dx": "普通货架去端点时先沿 X 平移的距离（米）。近 AGV 格持箱去 agv_car 不走这条。",
             "side_to_end_dy": "普通货架去端点的 Y 偏移，通常为 0。",
-            "side_to_side_same_retreat_dx": "沿朝向反方向退入走廊的距离。货架互搬以及近 AGV 持箱去 agv_car 的第一步。adjust_pose 在此后执行。",
-            "side_to_side_approach_dx": "有箱货架互搬：走到目标点沿朝向后退这么多（目标格正前方），再转向进入。空手互搬不用。",
+            "side_to_side_same_retreat_dx": "沿朝向反方向退入走廊的距离。同货架持箱第一步，以及两侧货架互搬、近 AGV 持箱去 agv_car。adjust_pose 在此后执行。",
+            "side_to_side_approach_dx": "两侧货架互搬有箱：走到目标点沿朝向后退这么多，再转向进入。同货架不用。",
             "side_to_end_agv_clear_dy": "近 AGV 格持箱去 agv_car：后退并校正后，沿走廊远离 AGV 再平移这么多，然后才转 90°，避免箱子撞货架。",
             "side_to_end_agv_clear_from": "需避让的起点货架格点位名，对应 (0,*,3)/(1,*,3)。",
             "side_to_end_agv_clear_to": "避让场景的终点，通常只有 agv_car0_0。",
@@ -109,6 +112,9 @@
         "angle_offset_deg": 90.0,
         "end_to_side_dx": 0.1,
         "end_to_side_dy": 0.0,
+        "end_to_side_agv_extra_dy": 0.2,
+        "end_to_side_agv_from": ["agv_car0_0"],
+        "end_to_side_agv_to": ["shelf0_3", "shelf1_3"],
         "side_to_end_dx": 0.4,
         "side_to_end_dy": 0.0,
         "side_to_end_agv_clear_dy": 0.4,
@@ -150,8 +156,10 @@
             "black_joystick": 0.5,
             "black_fan": 0.2,
             "yellow_hinge": 0.2,
-            "white_connector": 0.2,
-            "wire_harness": 0.2
+            "white_support_assy": 0.2,
+            "wire_harness": 0.2,
+            "white_support": 0.2,
+            "white_iron_sheet": 0.2
         }
     },
     "navigation_poses": {

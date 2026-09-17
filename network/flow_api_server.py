@@ -67,6 +67,10 @@ _EDITOR_STATIC_DIR = os.path.join(_REPO_ROOT, "flow_editor")
 _CONSOLE_LOG = os.path.join(_REPO_ROOT, "logs", "main_console.log")
 _CONSOLE_CHUNK = 256 * 1024
 
+# 编辑器保存流程 / 配置 / 点位时，把旧文件拷到同目录 ``.backups/``，只留最近若干份。
+_BACKUP_DIR_NAME = ".backups"
+_BACKUP_KEEP = 10
+
 # Docker 外部挂载的流程配置目录优先级高于项目内置目录，与 core/FLOW_ENGINE_GUIDE.md 第 7 节一致
 _EXTERNAL_FLOWS_DIR = "/config/flows"
 
@@ -393,10 +397,67 @@ def _keep_meta_fields(adapter: Dict[str, Any], flow_id: str, graph: Dict[str, An
             logger.info(_LOG, f"流程 '{flow_id}' 保存时补回元信息字段 {field}")
 
 
+def _backup_dir_for(path: str) -> str:
+    return os.path.join(os.path.dirname(path) or ".", _BACKUP_DIR_NAME)
+
+
+def _backup_sidecars(path: str) -> List[str]:
+    """同一原文件的备份（``.backups/`` 与旧的旁路 ``.bak.``），按时间戳从新到旧。"""
+    prefix = os.path.basename(path) + ".bak."
+    directory = os.path.dirname(path) or "."
+    found: List[str] = []
+    for folder in (_backup_dir_for(path), directory):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            if name.startswith(prefix):
+                found.append(os.path.join(folder, name))
+    found.sort(key=os.path.basename, reverse=True)
+    return found
+
+
+def _prune_backups(path: str, keep: int = _BACKUP_KEEP) -> List[str]:
+    """删除超出保留份数的旧备份，返回被删路径。"""
+    keep = max(0, int(keep))
+    removed: List[str] = []
+    for old in _backup_sidecars(path)[keep:]:
+        try:
+            os.remove(old)
+            removed.append(old)
+            logger.info(_LOG, f"删除过期备份: {old}")
+        except OSError as e:
+            logger.warning(_LOG, f"删除过期备份失败 {old}: {e}")
+    return removed
+
+
+def _backup_existing_file(
+    src_path: str,
+    log_label: str,
+    dest_base: Optional[str] = None,
+) -> Optional[str]:
+    """保存前把现有文件拷成带时间戳的备份，并只留最近 ``_BACKUP_KEEP`` 份。"""
+    if not os.path.isfile(src_path):
+        return None
+    base = dest_base or src_path
+    bak_dir = _backup_dir_for(base)
+    os.makedirs(bak_dir, exist_ok=True)
+    backup_path = os.path.join(
+        bak_dir,
+        os.path.basename(base) + ".bak." + datetime.now().strftime("%Y%m%d_%H%M%S"),
+    )
+    shutil.copy2(src_path, backup_path)
+    logger.info(_LOG, f"{log_label}: {backup_path}")
+    _prune_backups(base)
+    return backup_path
+
+
 def _write_flow(adapter: Dict[str, Any], flow_id: str, graph: Dict[str, Any]) -> str:
     """
     保存流程：若 /config/flows/ 目录存在（说明是挂载了外部配置的生产部署），写到外部目录；
-    否则写回项目内置目录（本地开发场景）。保存前自动备份旧版本，方便回滚。
+    否则写回项目内置目录（本地开发场景）。保存前把旧文件拷到同目录 ``.backups/``，
+    只留最近 10 份。
     中文流程名按原文写文件，不再把 URL 编码写进文件名。
     """
     flow_id = canonical_flow_id(flow_id)
@@ -413,9 +474,7 @@ def _write_flow(adapter: Dict[str, Any], flow_id: str, graph: Dict[str, Any]) ->
         and os.path.exists(legacy_encoded) else None
     )
     if existing:
-        backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        shutil.copy2(existing, backup_path)
-        logger.info(_LOG, f"保存前备份旧版本: {backup_path}")
+        _backup_existing_file(existing, "保存前备份旧版本", dest_base=path)
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(graph, f, ensure_ascii=False, indent=2)
@@ -572,9 +631,7 @@ def _write_robot_config(project: str, cfg: Dict[str, Any]) -> str:
     os.makedirs(target_dir, exist_ok=True)
     indent = _detect_json_indent(path) if os.path.isfile(path) else 4
     if os.path.isfile(path):
-        backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        shutil.copy2(path, backup_path)
-        logger.info(_LOG, f"保存 robot_config 前备份: {backup_path}")
+        _backup_existing_file(path, "保存 robot_config 前备份")
     with open(path, "w", encoding="utf-8") as f:
         f.write(_dump_config_json(cfg, indent))
     try:
@@ -678,9 +735,7 @@ def _write_waypoint_config(
         with open(path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
         indent = _detect_json_indent(path)
-        backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        shutil.copy2(path, backup_path)
-        logger.info(_LOG, f"保存走廊导航参数前备份: {backup_path}")
+        _backup_existing_file(path, "保存走廊导航参数前备份")
 
     current = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
     merged = bundle["merge"](current)
@@ -825,9 +880,7 @@ def _write_poses(project: str, poses: Dict[str, Any],
         with open(path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
         indent = _detect_json_indent(path)
-        backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        shutil.copy2(path, backup_path)
-        logger.info(_LOG, f"保存点位前备份旧配置: {backup_path}")
+        _backup_existing_file(path, "保存点位前备份旧配置")
 
     nav = cfg.get("navigation_poses")
     if not isinstance(nav, dict):

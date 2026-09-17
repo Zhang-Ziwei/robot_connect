@@ -150,6 +150,7 @@ def build_handler_registry(
             logger.error(_LOG, f"操作 {task} 失败: {ctx.get('last_error_msg')}")
             return False
         if ctx.get("gauge_dropped"):
+            ctx.set("human_reason", HumanReason.GAUGE_DROPPED)
             logger.warning(_LOG, f"操作 {task} 完成，但机器人报表已掉落（can_reinsert=false）")
         return True
 
@@ -416,6 +417,8 @@ def build_handler_registry(
         fn = calsys_ops.install_action if kind == "install" else calsys_ops.uninstall_action
         outcome = fn(adapter, seq, action, ctx)
         ctx.set("need_human", outcome == "human")
+        if outcome == "human" and not ctx.get("human_reason"):
+            ctx.set("human_reason", adapter.human_reason or HumanReason.CALSYS_ERROR)
         return outcome == "ok"
 
     def handle_calsys_install(node: FlowNode, ctx: FlowContext) -> bool:
@@ -476,7 +479,13 @@ def build_handler_registry(
 
     def handle_call_human(node: FlowNode, ctx: FlowContext) -> bool:
         adapter = _adapter(ctx)
-        reason = _param(node, ctx, "reason", HumanReason.CALSYS_ERROR)
+        node_reason = _param(node, ctx, "reason", "") or ""
+        existing = ""
+        if adapter:
+            existing = adapter.human_reason or ""
+        existing = existing or (ctx.get("human_reason") or "")
+        reason = existing or node_reason or HumanReason.CALSYS_ERROR
+        ctx.set("human_reason", reason)
         if adapter:
             adapter.call_human(reason)
             adapter.wait_human(_stop_event(ctx))

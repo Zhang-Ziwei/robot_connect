@@ -120,10 +120,18 @@ class ConSTMqttAdapter:
         self._client.subscribe("v1/ras/calsys/+/dutinfo_notify")
         self._client.subscribe("v1/ras/calsys/end_notify")
         rid = self.robot_id
+        # 点对点回复：规范是 v1/ras/robot/{robotId}/*_reply，同时收通配和
+        # calsys 侧误发，避免主题差一个字母就再也等不到回包。
         self._client.subscribe(f"v1/ras/robot/{rid}/install_reply")
         self._client.subscribe(f"v1/ras/robot/{rid}/unInstall_reply")
         self._client.subscribe(f"v1/ras/robot/{rid}/start_reply")
         self._client.subscribe(f"v1/ras/robot/{rid}/dutInfo_reply")
+        self._client.subscribe("v1/ras/robot/+/install_reply")
+        self._client.subscribe("v1/ras/robot/+/unInstall_reply")
+        self._client.subscribe("v1/ras/robot/+/uninstall_reply")
+        self._client.subscribe("v1/ras/calsys/+/install_reply")
+        self._client.subscribe("v1/ras/calsys/+/unInstall_reply")
+        self._client.subscribe("v1/ras/calsys/+/uninstall_reply")
         return True
 
     def disconnect(self):
@@ -227,6 +235,32 @@ class ConSTMqttAdapter:
 
     def stations(self) -> List[Dict[str, Any]]:
         return list((self.snapshot_calsys().get("stations") or []))
+
+    def station_status(self, seq) -> str:
+        try:
+            target = int(seq)
+        except (TypeError, ValueError):
+            target = station_seq_of({"stationSeq": seq})
+        for st in self.stations():
+            if station_seq_of(st) == target:
+                return str(st.get("robotStationStatus") or "")
+        return ""
+
+    def wait_station_status(
+        self,
+        seq,
+        wanted,
+        timeout: Optional[float] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> bool:
+        if isinstance(wanted, str):
+            wanted_set = {wanted}
+        else:
+            wanted_set = {str(x) for x in wanted}
+        return self.wait_until(
+            lambda: self.station_status(seq) in wanted_set,
+            timeout=timeout, stop_event=stop_event, poll=0.2,
+        )
 
     def enabled_stations(self) -> List[Dict[str, Any]]:
         return [s for s in self.stations() if s.get("isEnabled")]

@@ -105,6 +105,7 @@ class ConstTask:
 
 class ConstTimeout:
     MQTT_REPLY = 1.0
+    MQTT_LIVE_CONFIRM = 8.0
     MQTT_DUTINFO = 10.0
     MQTT_DISCOVER = 3.0
     MQTT_RETRIES = 2

@@ -95,13 +95,14 @@
       "label": "抓箱（自动选轻/重箱）",
       "params": {
         "call_type": "action",
-        "task": "auto_put",
+        "task": "auto_pick",
         "area": "{{pick_area}}",
         "extra_params": {
           "shelf_level": "{{pick_shelf_level}}"
         },
         "robot_id": "{{robot_id}}",
-        "timeout": 800
+        "timeout": 800,
+        "service": "robot_task"
       },
       "x": 800,
       "y": 200
@@ -148,17 +149,18 @@
     {
       "id": "put_box",
       "type": "send_operation",
-      "label": "放箱",
+      "label": "放箱（自动配对轻/重箱）",
       "params": {
         "call_type": "action",
-        "task": "put_down_box",
+        "task": "auto_put",
         "area": "{{put_area}}",
         "extra_params": {
           "shelf_level": "{{put_shelf_level}}",
           "same_level_movement": "{{same_level_movement}}"
         },
         "robot_id": "{{robot_id}}",
-        "timeout": 800
+        "timeout": 800,
+        "service": "robot_task"
       },
       "x": 1790,
       "y": 200

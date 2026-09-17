@@ -287,8 +287,10 @@ string current_params
 | `black_joystick` |
 | `black_fan` |
 | `yellow_hinge` |
-| `white_connector` |
+| `white_support_assy` |
 | `wire_harness` |
+| `white_support` |
+| `white_iron_sheet` |
 
 ---
 

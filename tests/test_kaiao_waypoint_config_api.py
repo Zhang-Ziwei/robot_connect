@@ -30,6 +30,9 @@ class TestKaiaoWaypointConfigApi(unittest.TestCase):
         keys = {f["key"] for f in KAIAO_WAYPOINT_FIELDS}
         self.assertIn("side_to_end_agv_clear_dy", keys)
         self.assertIn("side_to_side_approach_dx", keys)
+        self.assertIn("end_to_side_agv_extra_dy", keys)
+        self.assertIn("end_to_side_agv_from", keys)
+        self.assertIn("end_to_side_agv_to", keys)
         merged = merge_kaiao_waypoint_config({"_comment": "x", "side_to_end_agv_clear_dy": 0.5})
         self.assertEqual(merged["side_to_end_agv_clear_dy"], 0.5)
         self.assertNotIn("_comment", merged)

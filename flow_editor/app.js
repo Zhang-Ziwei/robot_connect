@@ -137,6 +137,87 @@
     updateUnsavedUi();
   }
 
+  // ── 画布撤销 / 重做（Ctrl+Z、Ctrl+Y / Ctrl+Shift+Z）────────────────────
+  // 每次改图之前拍一份快照。弹窗里的文本框不拦截，交给浏览器自己的撤销。
+  var UNDO_LIMIT = 50;
+  var undoStack = [];
+  var redoStack = [];
+  var undoSuspended = false;
+
+  function cloneGraph(graph) {
+    return JSON.parse(JSON.stringify(graph || { nodes: [], edges: [] }));
+  }
+
+  function resetUndo() {
+    undoStack = [];
+    redoStack = [];
+  }
+
+  function captureUndo() {
+    if (undoSuspended) return;
+    undoStack.push(cloneGraph(state.graph));
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    redoStack = [];
+  }
+
+  function graphContainsId(id, kind) {
+    if (!id) return false;
+    var list = kind === "edge" ? state.graph.edges : state.graph.nodes;
+    for (var i = 0; i < (list || []).length; i++) {
+      if (list[i].id === id) return true;
+    }
+    return false;
+  }
+
+  function applyGraphSnapshot(snap) {
+    undoSuspended = true;
+    state.graph = cloneGraph(snap);
+    if (!graphContainsId(state.selectedNodeId, "node")) state.selectedNodeId = null;
+    if (!graphContainsId(state.selectedEdgeId, "edge")) state.selectedEdgeId = null;
+    renderCanvas();
+    renderInspector();
+    markDirty();
+    undoSuspended = false;
+  }
+
+  function undoEdit() {
+    if (!undoStack.length) {
+      setStatus("没有可撤销的操作");
+      return;
+    }
+    redoStack.push(cloneGraph(state.graph));
+    applyGraphSnapshot(undoStack.pop());
+    setStatus("已撤销");
+  }
+
+  function redoEdit() {
+    if (!redoStack.length) {
+      setStatus("没有可重做的操作");
+      return;
+    }
+    undoStack.push(cloneGraph(state.graph));
+    applyGraphSnapshot(redoStack.pop());
+    setStatus("已重做");
+  }
+
+  function isModalTextTarget(el) {
+    if (!el || !el.closest) return false;
+    if (!el.closest(".modal-box")) return false;
+    var tag = (el.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || !!el.isContentEditable;
+  }
+
+  function isTextEntry(el) {
+    if (!el) return false;
+    var tag = (el.tagName || "").toLowerCase();
+    if (tag === "textarea" || tag === "select") return true;
+    if (tag === "input") {
+      var t = (el.type || "text").toLowerCase();
+      return t !== "button" && t !== "checkbox" && t !== "radio" && t !== "submit";
+    }
+    return !!el.isContentEditable;
+  }
+
   function updateUnsavedUi() {
     var sel = $("#sel-flow");
     if (sel) {
@@ -154,8 +235,8 @@
       btn.classList.remove("save-dirty", "save-clean");
       btn.classList.add(state.dirty ? "save-dirty" : "save-clean");
       btn.title = state.dirty
-        ? "有未保存修改，点击写入服务器（图形改动只有保存后才生效）"
-        : "当前流程已保存";
+        ? "有未保存修改，点击写入服务器。画布可用 Ctrl+Z 撤销、Ctrl+Y 重做。"
+        : "当前流程已保存。画布可用 Ctrl+Z 撤销、Ctrl+Y 重做。";
     }
     var enBtn = $("#btn-flow-enabled");
     if (enBtn) {
@@ -365,6 +446,7 @@
       state.enabledById[flowId] = !!state.graph.enabled;
       state.selectedNodeId = null;
       state.selectedEdgeId = null;
+      resetUndo();
       $("#sel-flow").value = flowId;
       markClean();
       renderCanvas();
@@ -455,6 +537,7 @@
     state.flowId = null;
     state.graph = { start: null, enabled: false, nodes: [], edges: [] };
     state.selectedNodeId = null;
+    resetUndo();
     renderCanvas();
     renderInspector();
   }
@@ -472,6 +555,7 @@
       state.selectedNodeId = null;
       state.selectedEdgeId = null;
       state.enabledById[name] = !state.exclusiveEnabled;
+      resetUndo();
       renderCanvas();
       renderInspector();
       markDirty();   // 新流程还没落盘，标成未保存
@@ -704,6 +788,7 @@
     (schema.fields || []).forEach(function (f) {
       if (f.default !== undefined) params[f.name] = f.default;
     });
+    captureUndo();
     state.graph.nodes.push({ id: id, type: type, label: schema.label || type, params: params, x: x, y: y });
     if (!state.graph.start) state.graph.start = id;
     markDirty();
@@ -719,6 +804,7 @@
   }
 
   function deleteNode(id) {
+    captureUndo();
     state.graph.nodes = state.graph.nodes.filter(function (n) { return n.id !== id; });
     state.graph.edges = state.graph.edges.filter(function (e) { return e.source !== id && e.target !== id; });
     if (state.graph.start === id) state.graph.start = state.graph.nodes.length ? state.graph.nodes[0].id : null;
@@ -1012,7 +1098,9 @@
         return e.source === connectState.sourceId && e.target === targetId;
       });
       if (dup) { connectState = null; setStatus(""); return; }
-    } else {
+    }
+    captureUndo();
+    if (!isParallel) {
       state.graph.edges = state.graph.edges.filter(function (e) {
         return !(e.source === connectState.sourceId && e.branch === connectState.branch);
       });
@@ -1041,6 +1129,7 @@
         return;
       }
       dragState.moved = true;
+      captureUndo();
     }
     var node = findNode(dragState.id);
     if (!node) return;
@@ -1059,7 +1148,22 @@
       connectState = null;
       setStatus("");
     }
+    var mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.altKey && (e.key === "z" || e.key === "Z")) {
+      if (isModalTextTarget(e.target)) return;
+      e.preventDefault();
+      if (e.shiftKey) redoEdit();
+      else undoEdit();
+      return;
+    }
+    if (mod && !e.shiftKey && (e.key === "y" || e.key === "Y")) {
+      if (isModalTextTarget(e.target)) return;
+      e.preventDefault();
+      redoEdit();
+      return;
+    }
     if (e.key === "Delete") {
+      if (isTextEntry(e.target)) return;
       if (state.selectedEdgeId) deleteEdge(state.selectedEdgeId);
       else if (state.selectedNodeId) deleteNode(state.selectedNodeId);
     }
@@ -1100,6 +1204,7 @@
   function deleteEdge(edgeId) {
     var edge = findEdge(edgeId);
     if (!edge) return;
+    captureUndo();
     if (edge.virtual) {
       state.graph.edges = state.graph.edges.filter(function (e) {
         return !(e.source === edge.source && e.target === edge.target);
@@ -1136,6 +1241,7 @@
     body.appendChild(makeField("string", "id", node.id, true, function () {}));
     body.appendChild(makeField("string", "label（展示名）", node.label, false, function (v) {
       if ((node.label || "") === v) return;
+      captureUndo();
       node.label = v; markDirty(); renderCanvas();
     }));
 
@@ -1145,6 +1251,7 @@
     startBtn.textContent = (state.graph.start === node.id) ? "★ 已是起点" : "设为起点";
     startBtn.disabled = state.graph.start === node.id;
     startBtn.addEventListener("click", function () {
+      captureUndo();
       state.graph.start = node.id; markDirty(); renderCanvas(); renderInspector();
     });
     startRow.appendChild(startBtn);
@@ -1166,6 +1273,7 @@
       var row = makeField(fieldType, field.label || field.name, displayValue, false, function (v) {
         var coerced = coerceFieldValue(field, v);
         if (sameParamValue(node.params[field.name], coerced)) return;
+        captureUndo();
         node.params[field.name] = coerced;
         if (node.type === "wait_for_command" && field.name === "event_name") {
           var defs = field.option_defaults || {};
@@ -1310,6 +1418,7 @@
       body.appendChild(makeField("select", "分支（when）", edge.branch || outputs[0], false, function (v) {
         var next = (v === "default" || v === "out") ? null : v;
         if (edge.branch === next) return;
+        captureUndo();
         edge.branch = next;
         markDirty();
         renderCanvas();
@@ -2055,16 +2164,25 @@
                 errBox.textContent = "「" + (ed.node.label || ed.eventName) + "」JSON 无效: " + e.message;
                 return;
               }
-              var data = normalizeDryrunPayload(parsed);
-              ed.node.params = ed.node.params || {};
-              ed.node.params.dryrun_params = data;
-              signals.push({ event: ed.eventName, data: data });
+              signals.push({
+                event: ed.eventName,
+                data: normalizeDryrunPayload(parsed),
+                node: ed.node,
+              });
+            }
+            captureUndo();
+            for (var j = 0; j < signals.length; j++) {
+              var item = signals[j];
+              item.node.params = item.node.params || {};
+              item.node.params.dryrun_params = item.data;
             }
             markDirty();
             var timeoutSec = Number(timeoutInput.value);
             if (!timeoutSec || timeoutSec < 5) timeoutSec = 60;
             close();
-            startDryRun(signals, timeoutSec);
+            startDryRun(signals.map(function (item) {
+              return { event: item.event, data: item.data };
+            }), timeoutSec);
           },
         },
       ],

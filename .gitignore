@@ -73,6 +73,7 @@ Thumbs.db
 
 # ── 编辑器自动备份 / 运行锁 ──────────────────────────────────────────────────
 *.bak.*
+.backups/
 robot_control.lock
 
 # ── 本地覆盖配置（若需上库请用 robot_config.example.json）────────────────────

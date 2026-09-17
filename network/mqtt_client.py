@@ -58,6 +58,7 @@ class MqttClient:
         self._lock = threading.Lock()
         self._pending: Dict[str, Tuple[threading.Event, List[Optional[Dict[str, Any]]]]] = {}
         self._topic_callbacks: List[Tuple[str, MessageCallback]] = []
+        self._subscriptions: List[Tuple[str, int]] = []
         self._host = ""
         self._port = 0
 
@@ -115,15 +116,11 @@ class MqttClient:
             pass
 
     def subscribe(self, topic: str, qos: int = 1) -> bool:
+        self._subscriptions = [(t, q) for t, q in self._subscriptions if t != topic]
+        self._subscriptions.append((topic, int(qos)))
         if not self._client:
             return False
-        result, _mid = self._client.subscribe(topic, qos=qos)
-        ok = result == 0
-        if ok:
-            logger.info(_LOG, f"订阅 {topic}")
-        else:
-            logger.error(_LOG, f"订阅 {topic} 失败 rc={result}")
-        return ok
+        return self._subscribe_now(self._client, topic, int(qos), log=True)
 
     def on_topic(self, topic_filter: str, callback: MessageCallback):
         """
@@ -186,11 +183,33 @@ class MqttClient:
     # ── paho 回调 ─────────────────────────────────────────────────────────────
 
     def _on_connect(self, client, userdata, flags, rc):  # noqa: ARG002
-        if rc == 0:
-            self._connected.set()
-        else:
+        if rc != 0:
             logger.error(_LOG, f"MQTT on_connect rc={rc}")
             self._connected.clear()
+            return
+        self._connected.set()
+        subs = list(self._subscriptions)
+        if not subs:
+            return
+        ok = 0
+        for topic, qos in subs:
+            if self._subscribe_now(client, topic, qos, log=False):
+                ok += 1
+        logger.info(_LOG, f"连接后订阅 {ok}/{len(subs)} 个主题")
+
+    def _subscribe_now(self, client, topic: str, qos: int, log: bool) -> bool:
+        try:
+            result, _mid = client.subscribe(topic, qos=qos)
+        except Exception as e:  # noqa: BLE001
+            logger.error(_LOG, f"订阅 {topic} 失败: {e}")
+            return False
+        ok = result == 0
+        if log or not ok:
+            if ok:
+                logger.info(_LOG, f"订阅 {topic}")
+            else:
+                logger.error(_LOG, f"订阅 {topic} 失败 rc={result}")
+        return ok
 
     def _on_disconnect(self, client, userdata, rc):  # noqa: ARG002
         self._connected.clear()
@@ -207,14 +226,20 @@ class MqttClient:
         if not isinstance(payload, dict):
             return
 
-        request_id = str(payload.get("requestId") or "")
+        request_id = payload_request_id(payload)
         if request_id:
             with self._lock:
                 pending = self._pending.get(request_id)
+                pending_ids = list(self._pending)
             if pending is not None:
                 event, box = pending
                 box[0] = payload
                 event.set()
+            elif pending_ids and topic.endswith("_reply"):
+                logger.warning(
+                    _LOG,
+                    f"收到 {topic} requestId={request_id}，与等待中的 {pending_ids} 不一致",
+                )
 
         for topic_filter, callback in list(self._topic_callbacks):
             if _topic_matches(topic_filter, topic):
@@ -222,6 +247,23 @@ class MqttClient:
                     callback(topic, payload)
                 except Exception as e:  # noqa: BLE001
                     logger.error(_LOG, f"主题回调 {topic_filter} 异常: {e}")
+
+
+def payload_request_id(payload: Dict[str, Any]) -> str:
+    """规范 requestId 在顶层；有的实现会只放在 data 里。"""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("requestId", "request_id", "RequestId"):
+        val = payload.get(key)
+        if val is not None and val != "":
+            return str(val)
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key in ("requestId", "request_id", "RequestId"):
+            val = data.get(key)
+            if val is not None and val != "":
+                return str(val)
+    return ""
 
 
 def _topic_matches(filter_str: str, topic: str) -> bool:
