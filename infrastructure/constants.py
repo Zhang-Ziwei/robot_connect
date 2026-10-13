@@ -1,23 +1,35 @@
 from enum import IntEnum
 
 # ── 项目模式默认值 ───────────────────────────────────────────────────────────
-# 可选值：TJSH / ATC / WRC / AJL / WAIC / KAIAO / ALL
+# 可选值：TJSH / ATC / WRC / AJL / WAIC / KAIAO / CONST_FLOW / XINXIANG / ZHANTING / ALL
 # 切换项目时修改此处即可；Docker 部署时可通过 /config/robot_config.json
 # 中的 active_project 字段在运行期覆盖（优先级更高）。
-DEFAULT_ACTIVE_PROJECT: str = "WAIC"
+DEFAULT_ACTIVE_PROJECT: str = "ZHANTING"
 
 # ── PLC保持寄存器地址映射 ─────────────────────────────────────────────────────
+# TwinCAT Static 按字节偏移：Int/Word 各 2 字节 → 保持寄存器 4001 起。
+# 0.0→4001 … 4.0→4003 … 8.0→4005 … 12.0→4007 … 26.0→4014。
 class PLCHoldingRegisters:
-    OPEN_LID_STATE = 0       # 4001: 0-未就绪,1-准备就绪,2-工作中,3-工作完成
-    CLEAN_STATE = 1          # 4002: 0-未就绪,1-准备就绪,2-工作中,3-工作完成
-    DETECT_STATE = 2         # 4003: 0-未就绪,1-准备就绪,2-放料位移完成,3-工作中,4-请求取走第一个样品,5-请求取走第二个样品
-    CLOSE_LID_STATE = 3      # 4004: 0-未就绪,1-准备就绪,2-工作中,3-工作完成
-    HOLDING_REG_COUNT = 4
+    OPEN_LID_STATE = 0       # 4001 偏移0: 开盖模块状态 0-未就绪,1-准备就绪,2-工作中,3-工作完成
+    CLEAN_STATE = 1          # 4002 偏移2: 清洗模块状态
+    DETECT_STATE = 2         # 4003 偏移4: 检测模块状态 0-未就绪,1-准备就绪,2-放料位移完成,3-工作中,4-请求取走第一个样品,5-请求取走第二个样品
+    CLOSE_LID_STATE = 3      # 4004 偏移6: 关盖模块状态
+    DEVICE_STATUS = 4        # 4005 偏移8: 设备状态显示
+    OPEN_CLOSE_FLOW = 5      # 4006 偏移10: 开关盖流程
+    DETECT_FLOW = 6          # 4007 偏移12: 分析检测流程
+    CLEAN_FLOW = 7           # 4008 偏移14: 翻转清洗流程
+    SERVO_OPEN_UD = 8        # 4009 偏移16: 开盖上下伺服（报警 Word）
+    SERVO_OPEN_TELESCOPE = 9 # 4010 偏移18: 开盖伸缩伺服
+    SERVO_DETECT_UD = 10     # 4011 偏移20: 检测上下步进
+    SERVO_DETECT_TURNTABLE = 11  # 4012 偏移22: 检测转盘伺服
+    SERVO_CLEAN_UD = 12      # 4013 偏移24: 清洗上下伺服
+    SERVO_CLEAN_ROTATE = 13  # 4014 偏移26: 清洗旋转伺服
+    HOLDING_REG_COUNT = 14
 
 # PLC线圈地址映射
 class PLCCoils:
     OPEN_START = 0           # 1: 开盖启动（状态1置位→状态2复位）
-    OPEN_FINISH = 1          # 2: 开盖完成后取瓶（状态3置位→状态1复位）
+    OPEN_FINISH = 1          # 2: 开盖完成后取瓶（状态3置位→状态0复位）
     CLOSE_START = 2          # 3: 关盖启动（状态1置位→状态2复位）
     CLOSE_FINISH = 3         # 4: 关盖完成后取瓶（状态3置位→状态1复位）
     DETECT_DISPENSE = 4      # 5: 检测放料位移（状态1置位→状态2复位）

@@ -97,6 +97,9 @@ _BUILTIN_TYPES = frozenset({
     "sub_flow", "noop",
 })
 
+# 内部会执行其它节点的内置类型，派发时额外接收主 trace 用于登记。
+_NESTED_BUILTIN_TYPES = frozenset({"parallel", "sub_flow"})
+
 def _to_number(value):
     """尽量把上下文里的值当数字用，返回 (数值, 是否成功)。"""
     if isinstance(value, bool):
@@ -473,7 +476,14 @@ class FlowEngine:
                     return FlowResult(False, "failed", f"超过最大执行步数 {max_steps}，可能存在死循环", ctx.snapshot(), trace)
                 self._check_pause_stop()
                 success, message = self._execute_one(current, ctx, trace)
-                current = self._pick_next(current, success, ctx)
+                nxt = self._pick_next(current, success, ctx)
+                if nxt is None and not self._ends_normally(current, success):
+                    node = self._nodes[current]
+                    detail = f"：{message}" if message else ""
+                    return FlowResult(False, "failed",
+                                      f"节点 {node.label or node.id} 失败且没有失败分支{detail}",
+                                      ctx.snapshot(), trace)
+                current = nxt
             return FlowResult(True, "completed", "流程执行完成", ctx.snapshot(), trace)
         except FlowStopped:
             return FlowResult(False, "stopped", "流程被外部 stop_event 中断", ctx.snapshot(), trace)
@@ -510,10 +520,15 @@ class FlowEngine:
             self._check_pause_stop()
             success, _ = self._execute_one(current, ctx, trace)
             nxt = self._pick_next(current, success, ctx)
-            if success and nxt is not None and nxt in barriers:
+            # 只要下一步是汇合点就停住，不看本节点成败：condition 判否走 false 分支、
+            # 或失败后走 failure 分支抵达汇合点，都算这条支路走到了汇合点。
+            # 这里若漏判，支路线程会越过屏障把汇合点及其后继也跑一遍。
+            if nxt is not None and nxt in barriers:
                 if arrived_at is not None:
                     arrived_at[start_node_id] = nxt
                 return True
+            if nxt is None:
+                return self._ends_normally(current, success)
             current = nxt
         return success 
 
@@ -547,7 +562,7 @@ class FlowEngine:
         self._emit(record)
 
         try:
-            success, message = self._dispatch(node, ctx)
+            success, message = self._dispatch(node, ctx, trace)
         except FlowStopped:
             raise
         except Exception as e:  # noqa: BLE001
@@ -560,9 +575,14 @@ class FlowEngine:
         self._emit(record)
         return success, message
 
-    def _dispatch(self, node: FlowNode, ctx: FlowContext) -> (bool, str):
+    def _dispatch(self, node: FlowNode, ctx: FlowContext, trace: List[NodeRecord]) -> (bool, str):
         if node.type in _BUILTIN_TYPES:
-            return getattr(self, f"_builtin_{node.type}")(node, ctx)
+            builtin = getattr(self, f"_builtin_{node.type}")
+            # 这两类会在内部跑起整条支路／整张子图，把主 trace 交给它们登记，
+            # 否则并行和子流程里的节点不会出现在执行记录里。
+            if node.type in _NESTED_BUILTIN_TYPES:
+                return builtin(node, ctx, trace)
+            return builtin(node, ctx)
         handler = self.handlers.get(node.type)
         if handler is None:
             return False, f"未注册节点类型 '{node.type}' 的处理函数"
@@ -597,6 +617,14 @@ class FlowEngine:
                 if e.when == "failure":
                     return e.target
             return None
+
+    def _ends_normally(self, node_id: str, success: bool) -> bool:
+        """走到没有下一个节点时，判断这是正常收尾还是失败中断。
+
+        condition 的 false 是分支结果而不是故障，false 分支没接线就是正常结束；
+        其余节点失败又没有 failure 出边，流程必须报失败，不能当成跑完。
+        """
+        return success or self._nodes[node_id].type == "condition"
 
     # ── 内置节点实现 ─────────────────────────────────────────────────────────
 
@@ -765,7 +793,8 @@ class FlowEngine:
                     barriers.add(e.target)
         return barriers
 
-    def _builtin_parallel(self, node: FlowNode, ctx: FlowContext) -> (bool, str):
+    def _builtin_parallel(self, node: FlowNode, ctx: FlowContext,
+                          trace: List[NodeRecord]) -> (bool, str):
         branches: List[str] = self._parallel_branch_starts(node)
         timeout = node.params.get("timeout")
         barriers = self._parallel_join_barriers(branches)
@@ -786,6 +815,7 @@ class FlowEngine:
                 ok = False
             with lock:
                 results[start_id] = ok
+                trace.extend(local_trace)
                 if start_id in local_arrived:
                     arrived_at[start_id] = local_arrived[start_id]
 
@@ -811,17 +841,21 @@ class FlowEngine:
         else:
             success = all(results.get(b, False) for b in branches)
 
+        join_failed = False
         if join_id and success:
-            join_ok = self.run_chain(join_id, ctx, [])
-            if not join_ok:
-                success = False
+            if not self.run_chain(join_id, ctx, trace):
+                success, join_failed = False, True
 
         msg = f"并行分支结果: {results}"
         if join_id:
             msg += f"；汇合({join_mode})后继续 {join_id}"
+            # 分支全成功但汇合后的链失败时，光看分支结果会以为这里没出问题。
+            if join_failed:
+                msg += "，汇合后的节点失败（详见执行记录）"
         return success, msg
 
-    def _builtin_sub_flow(self, node: FlowNode, ctx: FlowContext) -> (bool, str):
+    def _builtin_sub_flow(self, node: FlowNode, ctx: FlowContext,
+                          trace: List[NodeRecord]) -> (bool, str):
         if self.flow_loader is None:
             return False, "未提供 flow_loader，无法加载子流程"
         flow_id = node.params.get("flow")
@@ -835,6 +869,7 @@ class FlowEngine:
         )
         result = sub_engine.run(initial_context=ctx.snapshot(), extra=ctx.extra)
         ctx.update(result.context)
+        trace.extend(result.trace)
         return result.success, result.message
 
 

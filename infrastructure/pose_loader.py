@@ -44,13 +44,13 @@ _LOG = "PoseLoader"
 # 都不参与 "ALL" 模式（避免在 ALL 下悄悄抢走原项目的命令）。
 SUPPORTED_PROJECTS = frozenset({
     "TJSH", "ATC", "WRC", "WRC_FLOW", "AJL", "WAIC", "KAIAO", "KAIAO_FLOW",
-    "CONST_FLOW", "ALL",
+    "CONST_FLOW", "XINXIANG", "ZHANTING", "ALL",
 })
 
 # 允许在 robot_config.json 里新增 defaults 之外点位的项目（见 load_nav_poses 的
 # allow_extra_keys 参数）。这些项目支持在图形编辑器里增删点位，配置里多出来的 key
 # 是正常操作而非拼写错误。这里要与各项目 constants.py 里传的 allow_extra_keys 保持一致。
-ALLOW_EXTRA_POSE_KEYS_PROJECTS = frozenset({"WRC_FLOW", "KAIAO", "KAIAO_FLOW", "CONST_FLOW"})
+ALLOW_EXTRA_POSE_KEYS_PROJECTS = frozenset({"WRC_FLOW", "KAIAO", "KAIAO_FLOW", "CONST_FLOW", "XINXIANG", "ZHANTING"})
 
 # ── 项目配置优先级路径（共用于 active_project 与 navigation_poses）─────────
 _DOCKER_EXTERNAL_CONFIG = "/config/robot_config.json"
@@ -71,7 +71,7 @@ def get_active_project() -> str:
            （DEFAULT_ACTIVE_PROJECT，本地开发时修改此处切换项目）
 
     返回值：
-        "TJSH" / "ATC" / "WRC" / "WRC_FLOW" / "AJL" / "WAIC" / "KAIAO" / "KAIAO_FLOW" / "CONST_FLOW" / "ALL"
+        "TJSH" / "ATC" / "WRC" / "WRC_FLOW" / "AJL" / "WAIC" / "KAIAO" / "KAIAO_FLOW" / "CONST_FLOW" / "XINXIANG" / "ALL"
     """
     # 优先级 1：Docker 外部挂载配置
     try:
@@ -327,6 +327,13 @@ def reload_active_project_nav_poses() -> None:
     project = get_active_project()
     targets = []
 
+    if project == "ZHANTING":
+        from programs.ZHANTING.constants import NavigationPose as ZhantingNav, _ZHANTING_POSE_DEFAULTS
+        import programs.ZHANTING.constants as zhanting_c
+        targets.append((
+            "ZHANTING", ZhantingNav, _ZHANTING_POSE_DEFAULTS, os.path.dirname(zhanting_c.__file__),
+        ))
+
     if project == "CONST_FLOW":
         from programs.CONST_FLOW.constants import (
             NavigationPose as CONSTNav, _CONST_POSE_DEFAULTS,
@@ -334,6 +341,15 @@ def reload_active_project_nav_poses() -> None:
         import programs.CONST_FLOW.constants as const_c
         targets.append((
             "CONST_FLOW", CONSTNav, _CONST_POSE_DEFAULTS, os.path.dirname(const_c.__file__),
+        ))
+
+    if project == "XINXIANG":
+        from programs.XINXIANG.constants import (
+            NavigationPose as XinxiangNav, _XINXIANG_POSE_DEFAULTS,
+        )
+        import programs.XINXIANG.constants as xinxiang_c
+        targets.append((
+            "XINXIANG", XinxiangNav, _XINXIANG_POSE_DEFAULTS, os.path.dirname(xinxiang_c.__file__),
         ))
 
     if project == "WRC_FLOW":

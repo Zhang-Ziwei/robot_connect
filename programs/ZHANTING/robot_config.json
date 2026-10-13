@@ -1,0 +1,293 @@
+{
+    "_comment": "展厅图形化流程。S7 地址仅为逻辑点号，db/byte/bit 必须按现场 PLC 工程填写。人工完成上料后发送 ZHANTING_LOADED。",
+    "active_project": "ZHANTING",
+    "robots": {
+        "robot_a": {
+            "host": "127.0.0.1",
+            "port": "9090",
+            "robot_type": "robot_a",
+            "enabled": true,
+            "navigation_map": ""
+        }
+    },
+    "http_server": {
+        "port": 8090
+    },
+    "flow_api_server": {
+        "enabled": true,
+        "port": 8099
+    },
+    "flow_control": {
+        "require_process_begins": true
+    },
+    "navigation_map": {
+        "auto_set_on_connect": false,
+        "wait_idle_timeout": 60,
+        "service_timeout": 30,
+        "skip_if_same": true
+    },
+    "navigation_localization": {
+        "auto_set_after_map": false
+    },
+    "navigation_poses": {
+        "ZHANTING": {}
+    },
+    "plc": {
+        "_comment": "S7 连接 192.168.217.40:102，全部点位在 DB2。byte/bit 按现场 TIA 工程 DB2 布局填写：WMS_PLC（机器人输出 BOOL）占 0.0~1.0，PLC_WMS（机器人输入 INT）占 2~38。address 字段只是对照文本点表的逻辑点号，不参与寻址。rack=0/slot=1 待现场核对。",
+        "enabled": true,
+        "protocol": "s7",
+        "host": "192.168.217.40",
+        "port": 102,
+        "rack": 0,
+        "slot": 1,
+        "points": {
+            "open_state": {
+                "label": "开盖模块状态",
+                "address": 40000,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 2
+            },
+            "close_state": {
+                "label": "关盖模块状态",
+                "address": 40001,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 4
+            },
+            "detect_state": {
+                "label": "检测模块状态",
+                "address": 40002,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 6
+            },
+            "device_status": {
+                "label": "设备状态显示",
+                "address": 40003,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 8
+            },
+            "open_flow": {
+                "label": "开盖模块流程",
+                "address": 40004,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 10
+            },
+            "detect_flow": {
+                "label": "分析检测流程",
+                "address": 40005,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 12
+            },
+            "qr_1": {
+                "label": "发送二维码[1]",
+                "address": 40006,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 14
+            },
+            "qr_2": {
+                "label": "发送二维码[2]",
+                "address": 40007,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 16
+            },
+            "qr_3": {
+                "label": "发送二维码[3]",
+                "address": 40008,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 18
+            },
+            "qr_4": {
+                "label": "发送二维码[4]",
+                "address": 40009,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 20
+            },
+            "qr_5": {
+                "label": "发送二维码[5]",
+                "address": 40010,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 22
+            },
+            "qr_6": {
+                "label": "发送二维码[6]",
+                "address": 40011,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 24
+            },
+            "qr_7": {
+                "label": "发送二维码[7]",
+                "address": 40012,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 26
+            },
+            "qr_8": {
+                "label": "发送二维码[8]",
+                "address": 40013,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 28
+            },
+            "qr_9": {
+                "label": "发送二维码[9]",
+                "address": 40014,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 30
+            },
+            "qr_10": {
+                "label": "发送二维码[10]",
+                "address": 40015,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 32
+            },
+            "detect_lift_servo": {
+                "label": "检测升降伺服",
+                "address": 40016,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 34
+            },
+            "detect_turntable_servo": {
+                "label": "检测转盘伺服",
+                "address": 40017,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 36
+            },
+            "open_lift_servo": {
+                "label": "开盖升降伺服",
+                "address": 40018,
+                "type": "INT",
+                "access": "read",
+                "db": 2,
+                "byte": 38
+            },
+            "detect_dispense": {
+                "label": "检测模块放料移位",
+                "address": 0,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 0,
+                "bit": 0
+            },
+            "detect_start": {
+                "label": "检测模块启动",
+                "address": 1,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 0,
+                "bit": 1
+            },
+            "detect_pick": {
+                "label": "检测模块取料移位",
+                "address": 2,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 0,
+                "bit": 2
+            },
+            "detect_finish": {
+                "label": "检测模块取料完成",
+                "address": 3,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 0,
+                "bit": 3
+            },
+            "open_start": {
+                "label": "开盖启动",
+                "address": 4,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 0,
+                "bit": 4
+            },
+            "open_finish": {
+                "label": "开盖取料完成",
+                "address": 5,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 0,
+                "bit": 5
+            },
+            "close_start": {
+                "label": "关盖启动",
+                "address": 6,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 0,
+                "bit": 6
+            },
+            "close_finish": {
+                "label": "关盖取料完成",
+                "address": 7,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 0,
+                "bit": 7
+            },
+            "device_reset": {
+                "label": "设备复位",
+                "address": 8,
+                "type": "BOOL",
+                "access": "write",
+                "db": 2,
+                "byte": 1,
+                "bit": 0
+            }
+        },
+        "io_timeout": 5
+    },
+    "zhanting": {
+        "_comment": "机械臂接口约定：POST task/extra_params；动作真正完成后返回 HTTP 200 与 {success:true}。运行控制打开 Mock 后，请求打到本机 mock_http_service。接真机时把 arm_url 改成机械臂的完整 http 地址。",
+        "arm_url": "http://127.0.0.1:18080/",
+        "arm_response_mode": "completed",
+        "arm_success_field": "success",
+        "arm_success_value": true,
+        "arm_tasks": {
+            "load_to_opener": "load_bottle_to_opener",
+            "opener_to_robot": "take_bottle_to_robot",
+            "bottle_to_closer": "load_bottle_to_closer",
+            "closer_to_loading": "return_bottle_to_loading"
+        }
+    }
+}

@@ -1,0 +1,51 @@
+{
+    "_comment": "XINXIANG：定量分液、上料检测、数据采集。START_WORKING 只连机器人，发 PROCESS_BEGINS 才开跑。点位坐标先占位，在编辑器「点位」里改。PLC：本机作 Modbus TCP 服务器，检测模块当客户端连进来。",
+    "active_project": "XINXIANG",
+    "robots": {
+        "robot_a": {
+            "host": "127.0.0.1",
+            "port": "9090",
+            "robot_type": "robot_a",
+            "enabled": true,
+            "navigation_map": "xinxiang_map"
+        }
+    },
+    "http_server": {
+        "port": 8090
+    },
+    "flow_api_server": {
+        "enabled": true,
+        "port": 8099
+    },
+    "flow_control": {
+        "_comment": "必须先发 PROCESS_BEGINS 才开跑。若要 START_WORKING 连上后自动开跑，改为 false。",
+        "require_process_begins": true
+    },
+    "plc": {
+        "_comment": "本机是 Modbus TCP 服务器（与旧 plc_modbus.PLCServer 相同），检测模块作为客户端连进来。host 是监听地址，port 是监听端口。检测模块应连本机 IP:port，不要填对方 IP。enabled=false 时握手节点直接视为成功。",
+        "enabled": true,
+        "protocol": "modbus_server",
+        "host": "0.0.0.0",
+        "port": 502,
+        "unit_id": 1
+    },
+    "robot_connection": {
+        "reconnect_max_attempts": null,
+        "reconnect_interval": 5,
+        "ping_interval": 20,
+        "ping_timeout": 30
+    },
+    "navigation_map": {
+        "auto_set_on_connect": true,
+        "wait_idle_timeout": 60,
+        "service_timeout": 30,
+        "skip_if_same": true
+    },
+    "navigation_poses": {
+        "_comment": "格式：[[x,y,z,qx,qy,qz,qw], ...]。",
+        "XINXIANG": {
+            "home": [[0, 0, 0, 0, 0, 0, 1]],
+            "detect": [[0, 0, 0, 0, 0, 0, 1]]
+        }
+    }
+}

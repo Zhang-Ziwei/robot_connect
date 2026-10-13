@@ -432,6 +432,19 @@ class ParallelTaskStateMachine:
                     self.end_time = time.time()
                 logger.info("ParallelTaskStateMachine", "任务已取消")
 
+    def reset(self):
+        """重置状态机，回到刚构造好的样子。
+
+        通用重置流程（dispatcher_base.handle_reset_system）会调这个方法，所以名字
+        必须和单机 TaskStateMachine.reset 一致，否则 RESET_SYSTEM 会在这里抛
+        AttributeError，重置只做一半就被异常吞掉。
+        与 cancel_task 的区别：取消只在 RUNNING 时把状态改成 CANCELLED，重置则不看
+        当前状态，连错误信息和各机器人的步骤记录一起清空。
+        """
+        with self._lock:
+            self._init_fields()
+            logger.info("ParallelTaskStateMachine", "状态机已重置")
+
     def mark_robot_done(self, robot_id: str):
         """
         标记某台机器人的子流程已结束（成功或失败均须调用）。
@@ -477,9 +490,25 @@ class ParallelTaskStateMachine:
 
     # ── 状态查询 ──────────────────────────────────────────────────────────────
 
-    def get_state(self) -> Dict[str, Any]:
-        """返回完整任务状态字典，供 HTTP API 直接响应"""
+    def get_state(self, query_task_id: Optional[str] = None) -> Dict[str, Any]:
+        """返回完整任务状态字典，供 HTTP API 直接响应。
+
+        query_task_id 用来按命令 id 查某一轮任务。通用流程
+        （dispatcher_base.handle_get_task_state）在请求带了 target_cmd_id 时会把它
+        位置传进来，所以这个参数不能缺——缺了就是 TypeError，GET_TASK_STATE 在所有
+        用并行状态机的项目上都查不了指定任务。
+        对不上当前任务时返回和单机 TaskStateMachine 一样的「未找到」结构，上层靠
+        status 字段识别并转成 TASK_NOT_FOUND 响应。
+        """
         with self._lock:
+            if query_task_id and query_task_id != self.task_id:
+                return {
+                    "cmd_id": query_task_id,
+                    "status": "未找到",
+                    "message": f"任务ID不匹配或任务不存在: {query_task_id}",
+                    "current_task_id": self.task_id,
+                }
+
             duration = None
             if self.start_time:
                 duration = round((self.end_time or time.time()) - self.start_time, 2)

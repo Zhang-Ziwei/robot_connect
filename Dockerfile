@@ -132,6 +132,7 @@ RUN pip install --no-cache-dir \
     requests>=2.32.0 \
     numpy>=2.0.0 \
     pandas>=2.0.0 \
+    "python-snap7>=2.0,<3" \
     paho-mqtt>=1.6.0
 
 # 复制项目源代码

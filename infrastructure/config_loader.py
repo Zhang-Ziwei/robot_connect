@@ -33,6 +33,8 @@ _PROJECT_CONFIG_DIRS: Dict[str, str] = {
     "KAIAO": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "KAIAO")),
     "KAIAO_FLOW": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "KAIAO_FLOW")),
     "CONST_FLOW": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "CONST_FLOW")),
+    "XINXIANG": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "XINXIANG")),
+    "ZHANTING": os.path.normpath(os.path.join(_INFRA_DIR, "..", "programs", "ZHANTING")),
 }
 
 # 图形化试点项目的配置很薄（只写 robots / 端口），共用段（自动充电、导航地图运行时

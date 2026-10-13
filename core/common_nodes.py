@@ -31,12 +31,17 @@
 
 from typing import Any, Dict
 
+from core.http_nodes import NODE_TYPE_SCHEMAS as HTTP_NODE_TYPE_SCHEMAS
+from core.plc_nodes import NODE_TYPE_SCHEMAS as PLC_NODE_TYPE_SCHEMAS
+
 #: options_source 的取值由 network/flow_api_server.py 在返回 schema 时按项目实时注入：
 #:   "steps"  <- adapter["step_options"]    项目的任务步骤枚举
 #:   "robots" <- adapter["robot_options"]   项目配置里的机器人列表
 #:   "poses"  <- robot_config.json 的导航点位
 #: 项目没提供对应数据时，前端把该字段降级成自由文本输入，不会卡住编辑。
 COMMON_NODE_TYPE_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    **HTTP_NODE_TYPE_SCHEMAS,
+    **PLC_NODE_TYPE_SCHEMAS,
     "navigate": {
         "label": "导航到点位",
         "category": "机器人动作",

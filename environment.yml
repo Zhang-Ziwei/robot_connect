@@ -49,6 +49,7 @@ dependencies:
       - charset-normalizer==3.4.4
       - idna==3.11
       - pymodbus==3.8.6
+      - python-snap7>=2.0,<3
       - requests==2.32.5
       - urllib3==2.5.0
       - websockets==15.0.1

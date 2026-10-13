@@ -1,0 +1,616 @@
+{
+  "id": "zhanting_main",
+  "name": "展厅：开盖、双杯分液检测、关盖归位",
+  "version": 1,
+  "enabled": true,
+  "start": "start",
+  "context_vars": {
+    "robot_id": "robot_a"
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "wait_for_command",
+      "label": "流程开始",
+      "params": {
+        "event_name": "PROCESS_BEGINS",
+        "dryrun_params": {}
+      },
+      "x": 440,
+      "y": 30
+    },
+    {
+      "id": "manual_load",
+      "type": "wait_for_command",
+      "label": "人工：上料完成确认",
+      "params": {
+        "event_name": "ZHANTING_LOADED",
+        "dryrun_params": {}
+      },
+      "x": 440,
+      "y": 140
+    },
+    {
+      "id": "arm_load",
+      "type": "send_http",
+      "label": "机械臂：抓取料瓶到开盖器",
+      "params": {
+        "url": "{{arm_url}}",
+        "method": "POST",
+        "body": {
+          "task": "{{arm_tasks.load_to_opener}}",
+          "extra_params": {}
+        },
+        "timeout": 120,
+        "success_field": "{{arm_success_field}}",
+        "success_value": "{{arm_success_value}}",
+        "result_var": "arm_load_response"
+      },
+      "x": 440,
+      "y": 250
+    },
+    {
+      "id": "open",
+      "type": "plc_handshake",
+      "label": "PLC：开盖启动并等完成",
+      "params": {
+        "command": "open_start",
+        "state": "open_state",
+        "ready_value": 1,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 3
+      },
+      "x": 440,
+      "y": 360
+    },
+    {
+      "id": "arm_unload",
+      "type": "send_http",
+      "label": "机械臂：从开盖器取瓶放机器人前方",
+      "params": {
+        "url": "{{arm_url}}",
+        "method": "POST",
+        "body": {
+          "task": "{{arm_tasks.opener_to_robot}}",
+          "extra_params": {}
+        },
+        "timeout": 120,
+        "success_field": "{{arm_success_field}}",
+        "success_value": "{{arm_success_value}}",
+        "result_var": "arm_unload_response"
+      },
+      "x": 440,
+      "y": 470
+    },
+    {
+      "id": "open_finish",
+      "type": "plc_handshake",
+      "label": "PLC：开盖取料完成",
+      "params": {
+        "command": "open_finish",
+        "state": "open_state",
+        "ready_value": 3,
+        "timeout": 120,
+        "reset_after": true,
+        "pulse_seconds": 0.2
+      },
+      "x": 440,
+      "y": 580
+    },
+    {
+      "id": "pure_1",
+      "type": "send_operation",
+      "label": "操作：第一杯分液并放到旋转机构",
+      "params": {
+        "robot_id": "robot_a",
+        "call_type": "action",
+        "service": "robot_task",
+        "task": "pure_water",
+        "extra_params": {
+          "cube": 1
+        },
+        "timeout": 1200
+      },
+      "x": 440,
+      "y": 690
+    },
+    {
+      "id": "parallel_dispense",
+      "type": "parallel",
+      "label": "并行：第二杯分液／检测放料移位",
+      "params": {
+        "branches": [
+          "pure_2",
+          "detect_dispense"
+        ]
+      },
+      "x": 440,
+      "y": 800
+    },
+    {
+      "id": "pure_2",
+      "type": "send_operation",
+      "label": "操作：第二杯分液、放杯并放下试剂瓶",
+      "params": {
+        "robot_id": "robot_a",
+        "call_type": "action",
+        "service": "robot_task",
+        "task": "pure_water",
+        "extra_params": {
+          "cube": 2
+        },
+        "timeout": 1200
+      },
+      "x": 170,
+      "y": 910
+    },
+    {
+      "id": "detect_dispense",
+      "type": "plc_handshake",
+      "label": "PLC：检测放料移位并等状态 2",
+      "params": {
+        "command": "detect_dispense",
+        "state": "detect_state",
+        "ready_value": 1,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 2
+      },
+      "x": 710,
+      "y": 910
+    },
+    {
+      "id": "dispense_join",
+      "type": "noop",
+      "label": "第二杯分液和放料移位均完成",
+      "params": {
+        "join": "all"
+      },
+      "x": 440,
+      "y": 1020
+    },
+    {
+      "id": "parallel_finish",
+      "type": "parallel",
+      "label": "并行：关盖归位／检测倒液",
+      "params": {
+        "branches": [
+          "arm_close_load",
+          "detect_start"
+        ]
+      },
+      "x": 440,
+      "y": 1130
+    },
+    {
+      "id": "arm_close_load",
+      "type": "send_http",
+      "label": "机械臂：从桌面抓试剂瓶到关盖器",
+      "params": {
+        "url": "{{arm_url}}",
+        "method": "POST",
+        "body": {
+          "task": "{{arm_tasks.bottle_to_closer}}",
+          "extra_params": {}
+        },
+        "timeout": 120,
+        "success_field": "{{arm_success_field}}",
+        "success_value": "{{arm_success_value}}",
+        "result_var": "arm_close_load_response"
+      },
+      "x": 170,
+      "y": 1240
+    },
+    {
+      "id": "close",
+      "type": "plc_handshake",
+      "label": "PLC：关盖启动并等完成",
+      "params": {
+        "command": "close_start",
+        "state": "close_state",
+        "ready_value": 1,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 3
+      },
+      "x": 170,
+      "y": 1350
+    },
+    {
+      "id": "arm_return",
+      "type": "send_http",
+      "label": "机械臂：取瓶放回上料位",
+      "params": {
+        "url": "{{arm_url}}",
+        "method": "POST",
+        "body": {
+          "task": "{{arm_tasks.closer_to_loading}}",
+          "extra_params": {}
+        },
+        "timeout": 120,
+        "success_field": "{{arm_success_field}}",
+        "success_value": "{{arm_success_value}}",
+        "result_var": "arm_return_response"
+      },
+      "x": 170,
+      "y": 1460
+    },
+    {
+      "id": "close_finish",
+      "type": "plc_handshake",
+      "label": "PLC：关盖取料完成",
+      "params": {
+        "command": "close_finish",
+        "state": "close_state",
+        "ready_value": 3,
+        "timeout": 120,
+        "reset_after": true,
+        "pulse_seconds": 0.2
+      },
+      "x": 170,
+      "y": 1570
+    },
+    {
+      "id": "detect_start",
+      "type": "plc_handshake",
+      "label": "PLC：检测启动并等检测完成 4",
+      "params": {
+        "command": "detect_start",
+        "state": "detect_state",
+        "ready_value": 2,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 4
+      },
+      "x": 710,
+      "y": 1240
+    },
+    {
+      "id": "read_qr",
+      "type": "plc_read",
+      "label": "PLC：一次读取样品二维码 10 个字",
+      "params": {
+        "point": "qr_1",
+        "count": 10,
+        "variable": "qr_codes",
+        "dryrun_value": 0
+      },
+      "x": 710,
+      "y": 1350
+    },
+    {
+      "id": "pour_1",
+      "type": "send_operation",
+      "label": "操作：取第一杯并倒废液",
+      "params": {
+        "robot_id": "robot_a",
+        "call_type": "action",
+        "service": "robot_task",
+        "task": "pour_water",
+        "extra_params": {
+          "cube": 1
+        },
+        "timeout": 1200
+      },
+      "x": 710,
+      "y": 1460
+    },
+    {
+      "id": "detect_pick",
+      "type": "plc_handshake",
+      "label": "PLC：检测取料移位并等运行完成 6",
+      "params": {
+        "command": "detect_pick",
+        "state": "detect_state",
+        "ready_value": 4,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 6
+      },
+      "x": 710,
+      "y": 1570
+    },
+    {
+      "id": "pour_2",
+      "type": "send_operation",
+      "label": "操作：取第二杯并倒废液",
+      "params": {
+        "robot_id": "robot_a",
+        "call_type": "action",
+        "service": "robot_task",
+        "task": "pour_water",
+        "extra_params": {
+          "cube": 2
+        },
+        "timeout": 1200
+      },
+      "x": 710,
+      "y": 1680
+    },
+    {
+      "id": "detect_finish",
+      "type": "plc_handshake",
+      "label": "PLC：检测取料完成并等就绪",
+      "params": {
+        "command": "detect_finish",
+        "state": "detect_state",
+        "ready_value": 6,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 1
+      },
+      "x": 710,
+      "y": 1790
+    },
+    {
+      "id": "finish_join",
+      "type": "noop",
+      "label": "关盖归位和检测倒液均完成",
+      "params": {
+        "join": "all"
+      },
+      "x": 440,
+      "y": 1900
+    },
+    {
+      "id": "end",
+      "type": "update_step",
+      "label": "流程结束",
+      "params": {
+        "step": "完成",
+        "robot_id": "robot_a",
+        "message": "展厅本轮流程完成"
+      },
+      "x": 440,
+      "y": 2010
+    },
+    {
+      "id": "plc_handshake_3",
+      "type": "plc_handshake",
+      "label": "PLC：检测放料移位并等状态 2",
+      "params": {
+        "command": "detect_dispense",
+        "state": "detect_state",
+        "ready_value": 1,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 2
+      },
+      "x": 914,
+      "y": 265
+    },
+    {
+      "id": "wait_for_command_4",
+      "type": "wait_for_command",
+      "label": "流程开始",
+      "params": {
+        "event_name": "PROCESS_BEGINS",
+        "dryrun_params": {}
+      },
+      "x": 881,
+      "y": 169
+    },
+    {
+      "id": "plc_handshake_6",
+      "type": "plc_handshake",
+      "label": "PLC：检测启动并等检测完成 4",
+      "params": {
+        "command": "detect_start",
+        "state": "detect_state",
+        "ready_value": 2,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 4
+      },
+      "x": 926,
+      "y": 406
+    },
+    {
+      "id": "plc_handshake_7",
+      "type": "plc_handshake",
+      "label": "PLC：检测取料移位并等运行完成 6",
+      "params": {
+        "command": "detect_pick",
+        "state": "detect_state",
+        "ready_value": 4,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 6
+      },
+      "x": 950,
+      "y": 560
+    },
+    {
+      "id": "plc_handshake_8",
+      "type": "plc_handshake",
+      "label": "PLC：检测取料完成并等就绪",
+      "params": {
+        "command": "detect_finish",
+        "state": "detect_state",
+        "ready_value": 6,
+        "timeout": 120,
+        "reset_after": true,
+        "done_value": 1
+      },
+      "x": 964,
+      "y": 690
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "start",
+      "target": "manual_load",
+      "when": "success"
+    },
+    {
+      "id": "e1",
+      "source": "manual_load",
+      "target": "arm_load",
+      "when": "success"
+    },
+    {
+      "id": "e2",
+      "source": "arm_load",
+      "target": "open",
+      "when": "success"
+    },
+    {
+      "id": "e3",
+      "source": "open",
+      "target": "arm_unload",
+      "when": "success"
+    },
+    {
+      "id": "e4",
+      "source": "arm_unload",
+      "target": "open_finish",
+      "when": "success"
+    },
+    {
+      "id": "e5",
+      "source": "open_finish",
+      "target": "pure_1",
+      "when": "success"
+    },
+    {
+      "id": "e6",
+      "source": "pure_1",
+      "target": "parallel_dispense",
+      "when": "success"
+    },
+    {
+      "id": "e7",
+      "source": "pure_2",
+      "target": "dispense_join",
+      "when": "success"
+    },
+    {
+      "id": "e8",
+      "source": "detect_dispense",
+      "target": "dispense_join",
+      "when": "success"
+    },
+    {
+      "id": "e9",
+      "source": "dispense_join",
+      "target": "parallel_finish",
+      "when": "default"
+    },
+    {
+      "id": "e10",
+      "source": "arm_close_load",
+      "target": "close",
+      "when": "success"
+    },
+    {
+      "id": "e11",
+      "source": "close",
+      "target": "arm_return",
+      "when": "success"
+    },
+    {
+      "id": "e12",
+      "source": "arm_return",
+      "target": "close_finish",
+      "when": "success"
+    },
+    {
+      "id": "e13",
+      "source": "close_finish",
+      "target": "finish_join",
+      "when": "success"
+    },
+    {
+      "id": "e14",
+      "source": "detect_start",
+      "target": "read_qr",
+      "when": "success"
+    },
+    {
+      "id": "e15",
+      "source": "read_qr",
+      "target": "pour_1",
+      "when": "success"
+    },
+    {
+      "id": "e16",
+      "source": "pour_1",
+      "target": "detect_pick",
+      "when": "success"
+    },
+    {
+      "id": "e17",
+      "source": "detect_pick",
+      "target": "pour_2",
+      "when": "success"
+    },
+    {
+      "id": "e18",
+      "source": "pour_2",
+      "target": "detect_finish",
+      "when": "success"
+    },
+    {
+      "id": "e19",
+      "source": "detect_finish",
+      "target": "finish_join",
+      "when": "success"
+    },
+    {
+      "id": "e20",
+      "source": "finish_join",
+      "target": "end",
+      "when": "default"
+    },
+    {
+      "id": "e_par_parallel_dispense_pure_2",
+      "source": "parallel_dispense",
+      "target": "pure_2",
+      "when": "branch"
+    },
+    {
+      "id": "e_par_parallel_dispense_detect_dispense",
+      "source": "parallel_dispense",
+      "target": "detect_dispense",
+      "when": "branch"
+    },
+    {
+      "id": "e_par_parallel_finish_arm_close_load",
+      "source": "parallel_finish",
+      "target": "arm_close_load",
+      "when": "branch"
+    },
+    {
+      "id": "e_par_parallel_finish_detect_start",
+      "source": "parallel_finish",
+      "target": "detect_start",
+      "when": "branch"
+    },
+    {
+      "id": "e_1791628592644",
+      "source": "wait_for_command_4",
+      "target": "plc_handshake_3",
+      "when": "success"
+    },
+    {
+      "id": "e_1791628595711",
+      "source": "plc_handshake_3",
+      "target": "plc_handshake_6",
+      "when": "success"
+    },
+    {
+      "id": "e_1791628599575",
+      "source": "plc_handshake_6",
+      "target": "plc_handshake_7",
+      "when": "success"
+    },
+    {
+      "id": "e_1791628602315",
+      "source": "plc_handshake_7",
+      "target": "plc_handshake_8",
+      "when": "success"
+    }
+  ]
+}

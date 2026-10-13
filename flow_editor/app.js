@@ -36,6 +36,11 @@
     nextIdCounter: 1,
     dirty: false,             // 画布有未保存修改（切换流程/关页面前据此拦截）
     exclusiveEnabled: true,   // 本项目是否只允许一份流程激活（WRC/CONST）
+    authToken: null,          // 登录令牌，存 sessionStorage：关掉标签页即失效
+    principal: null,          // 当前身份 { role, role_label, permissions, allowed_projects }
+    loginRequired: false,     // 后端是否配了口令/账号（没配则不显示登录入口）
+    loginMode: "off",         // key=只要口令 / user=账号+口令 / both=可切换 / off=未启用
+    sessionMinutes: 480,      // 无操作多久自动退出，登录框里要说明
     enabledById: {},          // { flowId: true/false } 下拉框「激活」标记
     roleById: {},             // { flowId: 'entry' | 'subflow' } 子流程没有独立入口，不能激活
     zoom: 1,                  // 画布缩放比，1 = 100%
@@ -83,12 +88,27 @@
 
   // ── 2. API 封装 ──────────────────────────────────────────────────────────
 
+  function authHeaders(extra) {
+    var headers = extra ? Object.assign({}, extra) : {};
+    if (state.authToken) headers["X-Auth-Token"] = state.authToken;
+    return headers;
+  }
+
   function api(path, method, body) {
+    var headers = authHeaders(body ? { "Content-Type": "application/json" } : null);
     return fetch(path, {
       method: method || "GET",
-      headers: body ? { "Content-Type": "application/json" } : undefined,
+      headers: headers,
       body: body ? JSON.stringify(body) : undefined,
     }).then(function (resp) {
+      if (resp.status === 403) {
+        // 越权：后端已经拦下了。刷新一次身份，把界面按钮同步成当前角色该有的样子
+        return resp.json().catch(function () { return {}; }).then(function (res) {
+          if (res.principal) applyPrincipal(res.principal);
+          log(res.message || "当前身份没有此操作的权限", "failure");
+          throw new Error(res.message || "没有权限");
+        });
+      }
       return resp.json().catch(function () {
         if (resp.status === 404) {
           throw new Error("读取位姿接口不存在 (HTTP 404)。请重启 Flow API（python3 -m network.flow_api_server）后再试");
@@ -234,19 +254,25 @@
     if (btn) {
       btn.classList.remove("save-dirty", "save-clean");
       btn.classList.add(state.dirty ? "save-dirty" : "save-clean");
-      btn.title = state.dirty
-        ? "有未保存修改，点击写入服务器。画布可用 Ctrl+Z 撤销、Ctrl+Y 重做。"
-        : "当前流程已保存。画布可用 Ctrl+Z 撤销、Ctrl+Y 重做。";
+      // 按钮因无权限而置灰时，保留权限说明——否则用户只看到按钮点不动、不知道为什么
+      if (!btn.classList.contains("no-perm")) {
+        btn.title = state.dirty
+          ? "有未保存修改，点击写入服务器。画布可用 Ctrl+Z 撤销、Ctrl+Y 重做。"
+          : "当前流程已保存。画布可用 Ctrl+Z 撤销、Ctrl+Y 重做。";
+      }
     }
     var enBtn = $("#btn-flow-enabled");
     if (enBtn) {
       var isSub = state.roleById[state.flowId] === "subflow";
       var on = !isSub && !!(state.flowId && (state.graph.enabled || state.enabledById[state.flowId]));
-      enBtn.disabled = !state.flowId || isSub;
+      // 无权限时保持禁用：applyPermissionsToUi 打了 no-perm 标记
+      enBtn.disabled = !state.flowId || isSub || enBtn.classList.contains("no-perm");
       enBtn.classList.toggle("flow-on", on);
       enBtn.classList.toggle("flow-off", !on);
       enBtn.textContent = isSub ? "— 子流程" : (on ? "● 已激活" : "○ 激活");
-      enBtn.title = isSub
+      if (enBtn.classList.contains("no-perm")) {
+        // 无权限的说明优先，理由同 #btn-save
+      } else enBtn.title = isSub
         ? "子流程由别的流程用「调用子流程」节点调用，没有自己的启动入口，不需要激活。"
         : on
         ? (state.exclusiveEnabled
@@ -332,9 +358,273 @@
 
   // ── 3. 初始化 / 项目与流程加载 ───────────────────────────────────────────
 
+  // ── 身份与权限 ──────────────────────────────────────────────────────────
+  //
+  // 前端这一层只负责"别让人点到注定被拒的按钮"，真正的拦截在后端逐接口做。
+  // 所以这里的隐藏/置灰是体验问题，不是安全边界——绕过它也拿不到额外权限。
+
+  var PERM_LABELS = {
+    view: "查看", run_control: "启停调度", dryrun: "演练",
+    edit_flow: "改流程图", edit_poses: "改点位",
+    edit_robot_config: "改机器人配置", import_export: "导入导出",
+  };
+
+  function can(perm) {
+    if (!state.principal) return true;   // 身份还没拉到，先不拦，请求真发出去后端会判
+    return (state.principal.permissions || []).indexOf(perm) >= 0;
+  }
+
+  /** 能不能改当前选中的项目：维护者不限，开发者只能改授权列表里的。 */
+  function canEditProject(perm) {
+    if (!can(perm)) return false;
+    if (!state.principal || state.principal.all_projects) return true;
+    var allowed = state.principal.allowed_projects || [];
+    return allowed.indexOf(state.project) >= 0;
+  }
+
+  function refreshWhoami(announce) {
+    return api("/api/auth/whoami").then(function (res) {
+      state.loginRequired = !!res.login_required;
+      state.loginMode = res.login_mode || "off";
+      if (res.session_timeout_minutes) state.sessionMinutes = res.session_timeout_minutes;
+      applyPrincipal(res.principal);
+      // 进页面时把权限状态说一句。未启用时工具栏上没有任何痕迹，
+      // 不说的话"功能到底有没有生效"只能去翻 main.py 的终端日志。
+      if (announce) {
+        if (!state.loginRequired) {
+          log("权限管理未启用，当前可修改全部内容。"
+            + "要分级：在本机编辑 PACK_DELETE/auth_accounts.json，"
+            + "运行 python3 PACK_DELETE/make_auth_pack.py 后把密封包放到现场", "info");
+        } else {
+          var p = res.principal || {};
+          log("当前身份：" + (p.role_label || "?")
+            + (p.anonymous ? "（未登录，点右上角「登录」提权）" : ""), "info");
+        }
+      }
+    }).catch(function () { /* 老后端没这个接口，当作未启用权限 */ });
+  }
+
+  function applyPrincipal(principal) {
+    state.principal = principal || null;
+    updateAuthUi();
+    applyPermissionsToUi();
+  }
+
+  function updateAuthUi() {
+    var box = $("#auth-box");
+    if (!box) return;
+    // 没配账号 = 权限管理未启用，不显示这一栏，免得让人以为要登录
+    if (!state.loginRequired) { box.style.display = "none"; return; }
+    box.style.display = "";
+    var p = state.principal || {};
+    var who = $("#auth-who");
+    if (who) {
+      // 口令模式下没有账号名，name 就是角色标签，别拼成"开发者（开发者）"
+      who.textContent = (p.anonymous || !p.name || p.name === p.role_label)
+        ? p.role_label
+        : (p.name + "（" + p.role_label + "）");
+      var scope = "";
+      if (!p.anonymous && !p.all_projects && (p.allowed_projects || []).length) {
+        scope = "可改项目：" + p.allowed_projects.join("、");
+      } else if (p.all_projects) {
+        scope = "可改全部项目";
+      }
+      who.title = (scope ? scope + "\n" : "") +
+        "权限：" + (p.permissions || []).map(function (x) {
+          return PERM_LABELS[x] || x;
+        }).join("、");
+    }
+    var btn = $("#btn-auth");
+    if (btn) {
+      btn.textContent = p.anonymous ? "登录" : "退出";
+      btn.classList.toggle("auth-login", !!p.anonymous);
+      btn.title = p.anonymous ? "登录后可获得改流程图等权限" : "退出后回到使用者";
+    }
+  }
+
+  /**
+   * 按当前角色说明"为什么这个按钮点不动"。
+   * 分两种情况：权限本身没有（该登录/换人），以及权限有但这个项目没授权。
+   */
+  function permDeniedReason(perm, label) {
+    var p = state.principal || {};
+    if (!can(perm)) {
+      return "当前身份（" + (p.role_label || "?") + "）没有「" + label + "」权限"
+        + (p.anonymous ? "，请先登录" : "");
+    }
+    var allowed = (p.allowed_projects || []).join("、") || "无";
+    return "当前身份（" + (p.role_label || "?") + "）没有项目 " + state.project
+      + " 的修改权限。已授权的项目：" + allowed;
+  }
+
+  /** 把按钮按当前角色置灰，并在 title 里说明原因，避免用户以为按钮坏了。 */
+  function applyPermissionsToUi() {
+    if (!state.loginRequired) return;
+    var rules = [
+      ["#btn-save", canEditProject("edit_flow"), "edit_flow", "改流程图"],
+      ["#btn-flow-enabled", canEditProject("edit_flow"), "edit_flow", "改流程图"],
+      ["#btn-new-flow", canEditProject("edit_flow"), "edit_flow", "改流程图"],
+      ["#btn-dryrun", can("dryrun"), "dryrun", "演练"],
+      ["#btn-export", can("import_export"), "import_export", "导入导出"],
+    ];
+    rules.forEach(function (r) {
+      var el = $(r[0]);
+      if (!el) return;
+      // 记住 HTML 里写的原始说明，恢复权限时要还回去
+      if (el.dataset.origTitle === undefined) el.dataset.origTitle = el.title || "";
+      var allowed = r[1];
+      el.classList.toggle("no-perm", !allowed);
+      el.disabled = !allowed;
+      el.title = allowed ? el.dataset.origTitle : permDeniedReason(r[2], r[3]);
+    });
+    // 保存/激活按钮的常规 title 与禁用态由它统一算；no-perm 的会被跳过不覆盖
+    updateUnsavedUi();
+  }
+
+  function doLoginOrLogout() {
+    var p = state.principal || {};
+    if (!p.anonymous) {
+      api("/api/auth/logout", "POST").then(function (res) {
+        state.authToken = null;
+        try { sessionStorage.removeItem("flowEditorToken"); } catch (e) {}
+        applyPrincipal(res.principal);
+        log("已退出登录", "info");
+      }).catch(function (e) { log("退出失败: " + e.message, "failure"); });
+      return;
+    }
+    showLoginModal();
+  }
+
+    function showLoginModal() {
+    var available = state.loginMode || "off";
+    var tab = (available === "key") ? "key" : "user";
+    if (available === "both") tab = "user";
+    var form = document.createElement("div");
+    form.className = "login-form";
+
+    var lead = document.createElement("p");
+    lead.className = "login-lead";
+    form.appendChild(lead);
+
+    if (available === "both") {
+      var tabs = document.createElement("div");
+      tabs.className = "login-tabs";
+      var tabUser = document.createElement("button");
+      tabUser.type = "button";
+      tabUser.textContent = "账号登录";
+      var tabKey = document.createElement("button");
+      tabKey.type = "button";
+      tabKey.textContent = "口令登录";
+      tabs.appendChild(tabUser);
+      tabs.appendChild(tabKey);
+      form.appendChild(tabs);
+    }
+
+    var roles = document.createElement("div");
+    roles.className = "login-roles";
+    form.appendChild(roles);
+
+    function addField(labelText, type, autocomplete) {
+      var lab = document.createElement("label");
+      lab.className = "login-field";
+      lab.appendChild(document.createTextNode(labelText));
+      var input = document.createElement("input");
+      input.type = type;
+      input.autocomplete = autocomplete;
+      lab.appendChild(input);
+      form.appendChild(lab);
+      return { wrap: lab, input: input };
+    }
+    var nameField = addField("账号", "text", "username");
+    var passField = addField("口令", "password", "current-password");
+    var nameInput = nameField.input;
+    var passInput = passField.input;
+
+    var err = document.createElement("div");
+    err.className = "login-error";
+    form.appendChild(err);
+
+    var foot = document.createElement("p");
+    foot.className = "login-foot";
+    foot.textContent = "关闭本标签页即退出 · 无操作 " + state.sessionMinutes
+      + " 分钟自动退出 · 也可随时点右上角「退出」";
+    form.appendChild(foot);
+
+    function applyTab() {
+      var useAccount = tab === "user";
+      nameField.wrap.style.display = useAccount ? "" : "none";
+      lead.textContent = useAccount
+        ? "用自己的账号登录，改动会记在这个名字下。"
+        : "输入开发者或维护者口令即可，口令本身决定身份和可改项目。";
+      roles.innerHTML = useAccount
+        ? "<div class=\"login-role\"><b>账号</b>每人一个名字，便于对照是谁改了流程图</div>"
+        : "<div class=\"login-role\"><b>口令</b>维护者一条；开发者可多条，每条对应不同项目</div>";
+      if (available === "both") {
+        tabUser.className = useAccount ? "on" : "";
+        tabKey.className = useAccount ? "" : "on";
+      }
+      err.textContent = "";
+      setTimeout(function () {
+        var focusEl = useAccount ? nameInput : passInput;
+        if (focusEl) focusEl.focus();
+      }, 0);
+    }
+
+    function submit(close) {
+      var useAccount = tab === "user";
+      var name = useAccount ? (nameInput.value || "").trim() : "";
+      var pass = passInput ? passInput.value : "";
+      if (!pass || (useAccount && !name)) {
+        err.textContent = useAccount ? "请填账号和口令" : "请填口令";
+        return;
+      }
+      err.textContent = "";
+      fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name, password: pass, mode: tab }),
+      }).then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (res) {
+          if (!res.success) {
+            err.textContent = res.message || "登录失败";
+            if (passInput) { passInput.value = ""; passInput.focus(); }
+            return;
+          }
+          state.authToken = res.token;
+          try { sessionStorage.setItem("flowEditorToken", res.token); } catch (e) {}
+          applyPrincipal(res.principal);
+          close();
+          log("已登录：" + res.principal.name + "（" + res.principal.role_label + "）", "success");
+        }).catch(function (e) { err.textContent = "登录请求失败: " + e.message; });
+    }
+
+    var closeModal = showModal({
+      title: "登录",
+      content: form,
+      className: "login-modal",
+      buttons: [
+        { text: "登录", primary: true, keepOpen: true, action: submit },
+        { text: "取消" },
+      ],
+    });
+    if (available === "both") {
+      tabUser.addEventListener("click", function () { tab = "user"; applyTab(); });
+      tabKey.addEventListener("click", function () { tab = "key"; applyTab(); });
+    }
+    form.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submit(closeModal);
+      }
+    });
+    applyTab();
+  }
+
   function init() {
     bindToolbar();
     bindViewEvents();
+    try { state.authToken = sessionStorage.getItem("flowEditorToken") || null; } catch (e) {}
+    refreshWhoami(true);   // true = 在日志区报一下当前权限状态
     api("/api/projects").then(function (res) {
       if (!res.success || !res.projects.length) {
         setStatus("没有已注册的可视化项目", "error");
@@ -347,13 +637,17 @@
         opt.value = p; opt.textContent = p;
         sel.appendChild(opt);
       });
-      selectProject(res.projects[0]);
+      var active = res.active_project;
+      var initial = (active && res.projects.indexOf(active) >= 0) ? active : res.projects[0];
+      selectProject(initial);
     }).catch(function (e) {
       setStatus("加载项目列表失败: " + e.message, "error");
     });
   }
 
   function bindToolbar() {
+    var authBtn = $("#btn-auth");
+    if (authBtn) authBtn.addEventListener("click", doLoginOrLogout);
     $("#sel-project").addEventListener("change", function (e) {
       var target = e.target.value, prev = state.project;
       guardUnsaved(function () { selectProject(target); },
@@ -399,6 +693,10 @@
 
   function selectProject(project) {
     state.project = project;
+    var projectSel = $("#sel-project");
+    if (projectSel && projectSel.value !== project) projectSel.value = project;
+    // 开发者只被授权部分项目，换到未授权的项目时保存等按钮要置灰
+    applyPermissionsToUi();
     Promise.all([
       api(projectBase() + "/node-types"),
       api(projectBase() + "/flows"),
@@ -655,34 +953,21 @@
                          : "\n所有项目通用");
           item.style.setProperty("--cat-color", color);
           item.draggable = true;
+          var dragged = false;
           item.addEventListener("dragstart", function (e) {
+            dragged = true;
             e.dataTransfer.setData("text/plain", type);
           });
+          item.addEventListener("dragend", function () {
+            setTimeout(function () { dragged = false; }, 0);
+          });
           item.addEventListener("click", function () {
+            if (dragged) return;
             addNode(type, 120 + Math.random() * 200, 120 + Math.random() * 200);
           });
           list.appendChild(item);
         });
       });
-    });
-
-    var wrapper = $("#canvas-wrapper");
-    // 点画布空白处取消选中（点节点/连线时它们各自 stopPropagation，不会走到这里）
-    wrapper.addEventListener("mousedown", function (e) {
-      if (e.target === wrapper || e.target.id === "node-layer" || e.target.id === "edge-layer") {
-        clearSelection();
-      }
-    });
-    wrapper.addEventListener("dragover", function (e) { e.preventDefault(); });
-    wrapper.addEventListener("drop", function (e) {
-      e.preventDefault();
-      var type = e.dataTransfer.getData("text/plain");
-      if (!type) return;
-      // 画布可能被缩放过，屏幕像素要换算回图坐标（节点 x/y 存的是图坐标）
-      var rect = wrapper.getBoundingClientRect();
-      var x = (e.clientX - rect.left + wrapper.scrollLeft) / state.zoom;
-      var y = (e.clientY - rect.top + wrapper.scrollTop) / state.zoom;
-      addNode(type, x, y);
     });
   }
 
@@ -761,6 +1046,24 @@
     $("#btn-zoom-out").addEventListener("click", function () { applyZoom(state.zoom / 1.2); });
     $("#btn-zoom-fit").addEventListener("click", zoomToFit);
 
+    // 画布拖放必须绑一次。renderPalette 在换项目/改点位时会反复调用，
+    // 若把 drop 写在那里，每刷新一次就多一个监听，拖一块会叠出好几块。
+    wrapper.addEventListener("mousedown", function (e) {
+      if (e.target === wrapper || e.target.id === "node-layer" || e.target.id === "edge-layer") {
+        clearSelection();
+      }
+    });
+    wrapper.addEventListener("dragover", function (e) { e.preventDefault(); });
+    wrapper.addEventListener("drop", function (e) {
+      e.preventDefault();
+      var type = e.dataTransfer.getData("text/plain");
+      if (!type) return;
+      var rect = wrapper.getBoundingClientRect();
+      var x = (e.clientX - rect.left + wrapper.scrollLeft) / state.zoom;
+      var y = (e.clientY - rect.top + wrapper.scrollTop) / state.zoom;
+      addNode(type, x, y);
+    });
+
     // Ctrl/⌘ + 滚轮缩放；不按修饰键时保持正常滚动
     wrapper.addEventListener("wheel", function (e) {
       if (!e.ctrlKey && !e.metaKey) return;
@@ -813,6 +1116,65 @@
     markDirty();
     renderCanvas();
     renderInspector();
+  }
+
+  // ── 复制 / 粘贴功能块（Ctrl+C、Ctrl+V、Ctrl+D）──────────────────────────
+  // 剪贴板是模块内变量，不走系统剪贴板：参数里常有多行 JSON，经系统剪贴板要处理
+  // 读写权限和解析失败，而画布内复制本来也不需要跨标签页。
+  var nodeClipboard = null;
+  var pasteSerial = 0;          // 连续粘贴同一块时逐次错开，不叠在一起
+  var PASTE_OFFSET = 32;
+
+  function selectedNodeOr(hint) {
+    var node = state.selectedNodeId ? findNode(state.selectedNodeId) : null;
+    if (!node) setStatus(hint);
+    return node;
+  }
+
+  function insertNodeCopy(src, dx, dy) {
+    var id = src.type + "_" + (state.nextIdCounter++);
+    while (findNode(id)) { id = src.type + "_" + (state.nextIdCounter++); }
+    captureUndo();
+    var copy = JSON.parse(JSON.stringify(src));
+    copy.id = id;
+    copy.x = (Number(src.x) || 0) + dx;
+    copy.y = (Number(src.y) || 0) + dy;
+    // 并行块的支路记在 params.branches 里，而 materializeParallelOnGraph 会按它
+    // 补出边。副本要是带着原块的 branches，就会被补出一批指向原支路的边，两个
+    // 并行块同时带起同一批支路。副本一律当空并行块，支路由使用者自己连。
+    if (copy.type === "parallel" && copy.params) delete copy.params.branches;
+    state.graph.nodes.push(copy);
+    if (!state.graph.start) state.graph.start = id;
+    syncParallelBranches();
+    markDirty();
+    renderCanvas();
+    selectNode(id);
+    setStatus("已粘贴「" + (copy.label || id) + "」。连线需要自己拉，参数已带过来");
+    return copy;
+  }
+
+  function copySelectedNode() {
+    var node = selectedNodeOr("先点中一个功能块，再按 Ctrl+C 复制");
+    if (!node) return;
+    nodeClipboard = JSON.parse(JSON.stringify(node));
+    pasteSerial = 0;
+    setStatus("已复制「" + (node.label || node.id) + "」，按 Ctrl+V 粘贴");
+  }
+
+  function pasteNode() {
+    if (!nodeClipboard) {
+      setStatus("剪贴板是空的：先点中功能块按 Ctrl+C");
+      return;
+    }
+    pasteSerial += 1;
+    var d = PASTE_OFFSET * pasteSerial;
+    insertNodeCopy(nodeClipboard, d, d);
+  }
+
+  function duplicateSelectedNode() {
+    var node = selectedNodeOr("先点中一个功能块，再按 Ctrl+D 原地再生一个");
+    if (!node) return;
+    insertNodeCopy(node, PASTE_OFFSET, PASTE_OFFSET);
   }
 
   // ── 5. 画布渲染 ──────────────────────────────────────────────────────────
@@ -1166,6 +1528,17 @@
       if (isTextEntry(e.target)) return;
       if (state.selectedEdgeId) deleteEdge(state.selectedEdgeId);
       else if (state.selectedNodeId) deleteNode(state.selectedNodeId);
+    }
+    // 复制/粘贴/再生一个。放行条件比上面的 Ctrl+Z 更宽：任何输入框里都放行
+    // （Ctrl+C 得照常复制文字），而且只要有弹窗开着就不接——那会儿用户在跟弹窗
+    // 打交道，往背后的画布塞一个节点纯属意外。
+    var key = (e.key || "").toLowerCase();
+    if (mod && !e.altKey && !e.shiftKey && (key === "c" || key === "v" || key === "d")) {
+      if (isTextEntry(e.target) || document.querySelector(".modal-box")) return;
+      e.preventDefault();   // Ctrl+D 默认是加书签，必须拦住
+      if (key === "c") copySelectedNode();
+      else if (key === "v") pasteNode();
+      else duplicateSelectedNode();
     }
   });
 
@@ -1942,7 +2315,9 @@
     if (state.dryrunAbort && typeof state.dryrunAbort.abort === "function") {
       try { state.dryrunAbort.abort(); } catch (e) {}
     }
-    fetch("/api/dryrun/cancel", { method: "POST", cache: "no-store" }).catch(function () {});
+    fetch("/api/dryrun/cancel", {
+      method: "POST", cache: "no-store", headers: authHeaders(),
+    }).catch(function () {});
   }
 
   function finishDryRun(dryrun) {
@@ -2049,7 +2424,7 @@
     var url = projectBase() + "/flows/" + encodeURIComponent(state.flowId || "tmp") + "/dryrun";
     var opts = {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         graph: currentGraphPayload(),
         timeout: timeoutSec || 60,
@@ -2384,12 +2759,14 @@
     var mockSwitch = buildMockSwitch();
     head.appendChild(mockSwitch.root);
     var btnConfig = document.createElement("button");
+    btnConfig.type = "button";
     btnConfig.className = "run-head-toggle";
     btnConfig.textContent = "配置文件";
-    btnConfig.title = "编辑当前项目配置：KAIAO 走廊导航中间点（带字段注释）以及 robot_config.json。保存后需重置系统或重启 main.py 才生效。";
+    btnConfig.title = "编辑当前项目的 robot_config.json：机器人连接、点位、PLC 等（带字段注释）。保存后需重置系统或重启 main.py 才生效。";
     btnConfig.addEventListener("click", openRobotConfigEditor);
     head.appendChild(btnConfig);
     var btnToggleConsole = document.createElement("button");
+    btnToggleConsole.type = "button";
     btnToggleConsole.className = "run-head-toggle";
     btnToggleConsole.textContent = "主程序输出";
     btnToggleConsole.title = "展开或折叠右侧主程序终端输出。";
@@ -2429,6 +2806,7 @@
     var stateSide = document.createElement("div");
     stateSide.className = "run-panel-side";
     var btnRefresh = document.createElement("button");
+    btnRefresh.type = "button";
     btnRefresh.textContent = "状态刷新";
     btnRefresh.title = "向主程序查询当前任务/流程状态（GET_TASK_STATE），不向机器人发业务命令。";
     btnRefresh.addEventListener("click", function () {
@@ -2497,6 +2875,7 @@
     runControlCloser = closeModal;
 
     var btnClose = document.createElement("button");
+    btnClose.type = "button";
     btnClose.textContent = "关闭";
     btnClose.title = "关闭运行控制面板。";
     btnClose.addEventListener("click", closeModal);
@@ -2531,7 +2910,7 @@
   function buildMockSwitch() {
     var label = document.createElement("label");
     label.className = "run-mock-switch";
-    label.title = "启动或关闭 mock_rosbridge/mock_rosbridge_server.py（本机 9090/9091/9092）。给运行控制连模拟机器人用。";
+    label.title = "启动或关闭本机 mock：机器人 rosbridge（9090/9091/9092）和机械臂 HTTP（http://127.0.0.1:18080/）。";
 
     var input = document.createElement("input");
     input.type = "checkbox";
@@ -2546,22 +2925,41 @@
 
     var stopped = false;
     var busy = false;
+    var syncing = false;
+    var fromUser = false;
+
+    label.addEventListener("pointerdown", function () { fromUser = true; });
+    label.addEventListener("pointerup", function () {
+      setTimeout(function () { fromUser = false; }, 0);
+    });
+    label.addEventListener("pointercancel", function () { fromUser = false; });
 
     function apply(res) {
       if (!res) return;
+      syncing = true;
       input.checked = !!res.running;
+      syncing = false;
       label.title = res.message || label.title;
       text.textContent = res.running ? "Mock 开" : "Mock";
     }
 
     function refresh() {
       if (stopped || busy) return;
-      fetch("/api/mock-rosbridge", { cache: "no-store" }).then(function (r) {
+      fetch("/api/mock-rosbridge", { cache: "no-store", headers: authHeaders() }).then(function (r) {
         return r.json();
       }).then(apply).catch(function () {});
     }
 
     input.addEventListener("change", function () {
+      if (syncing) return;
+      // 启动 / 重置等按钮不是这个开关。没在开关上按下时，不把勾选变化当成用户打开 Mock。
+      if (!fromUser) {
+        syncing = true;
+        input.checked = !input.checked;
+        syncing = false;
+        return;
+      }
+      fromUser = false;
       var want = input.checked;
       if (busy) {
         input.checked = !want;
@@ -2571,7 +2969,7 @@
       input.disabled = true;
       fetch("/api/mock-rosbridge", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ enabled: want }),
       }).then(function (r) { return r.json(); }).then(function (res) {
         apply(res);
@@ -2597,6 +2995,9 @@
   }
 
   function stringifyWaypointValue(field, value) {
+    if (field.type === "boolean") {
+      return value ? "true" : "false";
+    }
     if (field.type === "string_list") {
       return (Array.isArray(value) ? value : []).join(", ");
     }
@@ -2614,8 +3015,12 @@
     (form._wpFields || []).forEach(function (field) {
       var el = form.querySelector('[data-wp-key="' + field.key + '"]');
       if (!el) return;
-      var raw = el.value;
       try {
+        if (field.type === "boolean") {
+          out[field.key] = !!el.checked;
+          return;
+        }
+        var raw = el.value;
         if (field.type === "number") {
           var n = Number(String(raw).trim());
           if (!isFinite(n)) throw new Error("必须是数字");
@@ -2647,7 +3052,7 @@
 
     var title = document.createElement("div");
     title.className = "palette-category";
-    title.textContent = "走廊导航中间点（kaiao_waypoint）";
+    title.textContent = wp.title || "走廊导航中间点（kaiao_waypoint）";
     wrap.appendChild(title);
 
     var intro = document.createElement("p");
@@ -2669,19 +3074,28 @@
       var lab = document.createElement("label");
       lab.textContent = field.label || field.key;
       var input;
-      if (field.type === "json") {
+      if (field.type === "boolean") {
+        lab.textContent = "";
+        lab.className = "wp-check";
+        input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = !!(wp.values || {})[field.key];
+        lab.appendChild(input);
+        lab.appendChild(document.createTextNode(field.label || field.key));
+      } else if (field.type === "json") {
         input = document.createElement("textarea");
         input.rows = 2;
         input.className = "wp-json";
         input.spellcheck = false;
+        input.value = stringifyWaypointValue(field, (wp.values || {})[field.key]);
       } else {
         input = document.createElement("input");
         input.type = field.type === "number" ? "number" : "text";
         if (field.type === "number") input.step = "any";
+        input.value = stringifyWaypointValue(field, (wp.values || {})[field.key]);
       }
       input.setAttribute("data-wp-key", field.key);
-      input.value = stringifyWaypointValue(field, (wp.values || {})[field.key]);
-      lab.appendChild(input);
+      if (field.type !== "boolean") lab.appendChild(input);
       row.appendChild(lab);
       if (field.comment) {
         var cmt = document.createElement("p");
@@ -2856,6 +3270,7 @@
 
   function makeRunButton(a, stateBox, echo) {
     var btn = document.createElement("button");
+    btn.type = "button";
     btn.textContent = a.text || a.cmd;
     if (a.danger) btn.className = "danger";
     if (a.hint) btn.title = a.hint;
@@ -2907,6 +3322,7 @@
     mainHost.appendChild(ta);
 
     var sendBtn = document.createElement("button");
+    sendBtn.type = "button";
     sendBtn.className = "primary";
     sendBtn.textContent = "发送";
     sendBtn.title = "把左侧 JSON 转发到主程序命令端口（8090），等同 WCS / curl。作用于真实调度，不是顶部的演练。";
@@ -3039,7 +3455,7 @@
     function poll() {
       if (stopped) return;
       var q = first ? "?tail=131072" : ("?after=" + offset);
-      fetch("/api/console" + q, { cache: "no-store" }).then(function (resp) {
+      fetch("/api/console" + q, { cache: "no-store", headers: authHeaders() }).then(function (resp) {
         return resp.json();
       }).then(function (res) {
         if (stopped) return;
@@ -3101,7 +3517,7 @@
         phase: 0,
         title: "先选项目和流程",
         body: [
-          "「项目」对应一套现场任务（例如 WRC_FLOW、KAIAO_FLOW、CONST_FLOW），节点种类和命令都不一样。",
+          "「项目」对应一套现场任务，可选项就是下拉框里的那些，不同项目的节点种类和命令都不一样。",
           "「流程」是这个项目下的一张图。下拉框里带标记的是当前激活、命令真正会执行的那一份。"
         ],
         targets: ["#tour-project", "#tour-flow"]
@@ -3142,7 +3558,8 @@
         title: "点一项就能放下",
         body: [
           "例如先放一个导航或延时。每个块左边是入口，右边是出口；条件块会有 true / false 两个出口。",
-          "放错了：点中块后按 Delete 删除。起点块标题里会带 ★。"
+          "放错了：点中块后按 Delete 删除。起点块标题里会带 ★。",
+          "参数差不多的块不用重配：点中后 Ctrl+C 复制、Ctrl+V 粘贴，或 Ctrl+D 原地再生一个。副本带着参数，连线仍要自己拉。"
         ],
         targetFn: firstPaletteItem,
         before: function (done) {
@@ -3230,7 +3647,7 @@
         phase: 3,
         title: "新手请打开 Mock",
         body: [
-          "这个开关会启动本机 mock_rosbridge（9090/9091/9092），让主程序连模拟机器人而不是现场真机。",
+          "这个开关会启动本机 mock_rosbridge（9090/9091/9092）和机械臂 HTTP mock（http://127.0.0.1:18080/）。",
           "没开 Mock 时，「启动」会去连配置文件里的真实机器人。不熟悉现场前请保持 Mock 打开。"
         ],
         target: ".run-mock-switch",

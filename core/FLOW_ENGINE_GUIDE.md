@@ -168,6 +168,31 @@ def build_handler_registry(robots, task_state_machine, get_robot=None, conveyor=
   在半途。`parallel` 节点内部的每条分支也共享同一对 `pause_event`/`stop_event`，
   收到停止信号会各自退出后再汇合。
 
+## 成败判定与执行记录
+
+一条路走到"没有下一个节点"时，是正常收尾还是失败中断，按下面的规则定：
+
+- 节点成功且没有后继 —— 正常结束，`FlowResult.status == "completed"`。
+- 节点失败且**连了** `failure` 出边 —— 走失败分支，流程继续，不算整体失败。
+- 节点失败且**没连** `failure` 出边 —— 流程就地终止，`status == "failed"`，
+  `message` 里带上该节点的标签。要让失败被当成正常收尾，就显式接一条
+  `failure` 边到收尾节点。
+- `condition` 判否且没连 `false` 出边 —— 正常结束。false 是分支结果不是故障。
+
+`parallel` 的每条支路按同样规则判定，支路结果再按 `join` 汇总：`all` 要求
+每条支路都抵达汇合点，`any` 只要有一条抵达。支路里的 `condition` 判否、
+或失败后走 `failure` 边抵达汇合点，都算这条支路到了汇合点。
+反过来说，**支路里有悬空的终止路径时，`join=all` 会判整图失败**——因为汇合
+之后的节点永远不会执行。要表达"有条件地跳过这一段"，把 `condition` 的
+false 分支也接到汇合点。
+
+`FlowResult.trace` 收录执行过的**全部**节点，包括并行支路内部、汇合点之后、
+以及 `sub_flow` 子图里的节点，所以上层可以直接扫 trace 找出真正失败的那个：
+
+```python
+failed = [r.node_id for r in result.trace if r.status == "failure" and r.type != "condition"]
+```
+
 ## 变量与上下文（FlowContext）
 
 - `ctx.get(key, default)` / `ctx.set(key, value)` / `ctx.update(dict)`：

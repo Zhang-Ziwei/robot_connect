@@ -1,0 +1,8 @@
+{
+  "_说明": [
+    "本文件已不再读取。",
+    "明文账号：PACK_DELETE/auth_accounts.json（打包前整夹删除）",
+    "生成：python3 PACK_DELETE/make_auth_pack.py",
+    "现场使用：infrastructure/auth_accounts.pack ，可用 /config/auth_accounts.pack 整份覆盖"
+  ]
+}

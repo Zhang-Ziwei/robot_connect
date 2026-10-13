@@ -49,6 +49,8 @@ from programs.WAIC.WAIC import WAICHandler
 from programs.KAIAO.KAIAO import KAIAOHandler
 from programs.KAIAO_FLOW.KAIAO_FLOW import KAIAOFlowHandler
 from programs.CONST_FLOW.CONST_FLOW import CONSTFlowHandler
+from programs.XINXIANG.XINXIANG import XinxiangHandler
+from programs.ZHANTING.ZHANTING import ZhantingHandler
 from handlers.dispatcher_base import BaseCmdDispatcher
 from infrastructure.pose_loader import get_active_project
 
@@ -121,6 +123,8 @@ class CmdHandler(BaseCmdDispatcher):
         self._waic = None
         self._wrc_flow = None
         self._const_flow = None
+        self._xinxiang = None
+        self._zhanting = None
 
         # ── 读取激活项目，决定注册哪些命令 ───────────────────────────────
         active_project = get_active_project()
@@ -264,6 +268,17 @@ class CmdHandler(BaseCmdDispatcher):
         if active_project == "CONST_FLOW":
             self._const_flow = CONSTFlowHandler(robots=self.robots)
             self._handler_map.update(self._const_flow.build_command_map())
+
+        # XINXIANG：定量分液 / 检测模块线性流程。不需要 PROCESS_BEGINS，
+        # START_WORKING 连上后由 handler 自动开跑。
+        if active_project == "XINXIANG":
+            self._xinxiang = XinxiangHandler(robots=self.robots)
+            self._handler_map.update(self._xinxiang.build_command_map())
+
+        if active_project == "ZHANTING":
+            self._zhanting = ZhantingHandler(robots=self.robots)
+            self.task_state_machine = self._zhanting.task_state_machine
+            self._handler_map.update(self._zhanting.build_command_map())
 
 
     def handle_pickup(self, cmd_data: Dict) -> Dict:
@@ -3078,6 +3093,16 @@ class CmdHandler(BaseCmdDispatcher):
                 self._const_flow.shutdown()
             except Exception:
                 pass
+        if self._xinxiang is not None:
+            try:
+                self._xinxiang.shutdown()
+            except Exception:
+                pass
+        if self._zhanting is not None:
+            if not self._zhanting.shutdown():
+                return make_error_response(
+                    ErrorCode.ROBOT_BUSY, "展厅动作尚未退出，请等待当前请求结束后再重置", cmd_id=cmd_data.get("cmd_id"),
+                )
         # TJSH 特有事件清理
         self.scan_enter_id_event.clear()
         self.pick_from_opener_500_event.clear()

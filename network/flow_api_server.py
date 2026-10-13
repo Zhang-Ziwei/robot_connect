@@ -45,6 +45,12 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from infrastructure.error_logger import get_error_logger
 from infrastructure.config_loader import get_flow_api_server_config
 from core.common_nodes import COMMON_NODE_TYPE_SCHEMAS
+from infrastructure.auth import (
+    Perm, PROJECT_SCOPED_PERMS, ROLE_LABELS,
+    has_any_account, load_auth_config, login as auth_login,
+    login_mode as auth_login_mode, logout as auth_logout, principal_for_token,
+    status_line as auth_status_line,
+)
 from core.flow_engine import (
     FlowEngine, FlowResult, NodeRecord, SignalBus,
     validate_flow_graph, BUILTIN_NODE_TYPE_SCHEMAS,
@@ -316,10 +322,110 @@ def _load_const_flow_adapter():
     }
 
 
+def _load_xinxiang_adapter():
+    from programs.XINXIANG import dryrun_adapter, node_handlers
+    return {
+        "display_name": "新乡",
+        "local_flows_dir": os.path.join(_REPO_ROOT, "programs", "XINXIANG", "flows"),
+        "project_node_schemas": node_handlers.NODE_TYPE_SCHEMAS,
+        "common_nodes": node_handlers.COMMON_NODES,
+        "known_handler_types": (
+            list(node_handlers.NODE_TYPE_SCHEMAS.keys()) + list(node_handlers.COMMON_NODES)
+        ),
+        "dryrun_adapter": dryrun_adapter,
+        "poses_project": "XINXIANG",
+        "poses_config_dir": os.path.join(_REPO_ROOT, "programs", "XINXIANG"),
+        "robot_options": ["robot_a"],
+        "step_options": node_handlers.STEP_OPTIONS,
+        "service_options": node_handlers.SERVICE_OPTIONS,
+        "command_options": ["PROCESS_BEGINS"],
+        "exclusive_enabled_flow": True,
+        "run_control": {
+            "hint": (
+                "「启动」只连机器人。「流程开始」发 PROCESS_BEGINS，打开已激活的线性流程。"
+                "也可在「模拟 HTTP 发送」里下发同一条。main.py 的 active_project 必须是 XINXIANG。"
+            ),
+            "buttons": [
+                {"action": "begin", "text": "启动", "cmd": "START_WORKING", "group": "power",
+                 "hint": "连接机器人、下发导航地图。完成后发 PROCESS_BEGINS 才开跑流程。"},
+                {"action": "reset_system", "text": "重置系统", "cmd": "RESET_SYSTEM",
+                 "group": "power", "confirm": True, "danger": True,
+                 "hint": "停自动流程、断开机器人，回到休眠。",
+                 "confirm_message": "确定发送 RESET_SYSTEM？自动循环会停。"},
+                {"action": "process_begins", "text": "流程开始", "cmd": "PROCESS_BEGINS",
+                 "group": "flow",
+                 "hint": "打开已激活的流程图。先「启动」连上机器人，再点本按钮或发 HTTP。"},
+                {"action": "pause", "text": "流程暂停", "cmd": "PROCESS_PAUSED", "group": "flow",
+                 "hint": "暂停正在跑的流程。"},
+                {"action": "resume", "text": "流程恢复", "cmd": "PROCESS_RESUMED", "group": "flow",
+                 "hint": "从暂停处继续。"},
+                {"action": "end", "text": "流程结束", "cmd": "PROCESS_ENDED", "group": "flow",
+                 "confirm": True,
+                 "hint": "停止自动循环，需再次「流程开始」才会再跑。",
+                 "confirm_message": "确定结束当前新乡流程吗？"},
+                {"action": "cancel_op", "text": "操作取消", "group": "interrupt",
+                 "disabled": True,
+                 "hint": "当前动作走 Service，没有操作取消。"},
+                {"action": "cancel_nav", "text": "导航取消", "group": "interrupt",
+                 "disabled": True,
+                 "hint": "本项目暂未开放导航取消。"},
+            ],
+            "command_templates": [
+                {"label": "PROCESS_BEGINS",
+                 "path": "test_commands/PROCESS_BEGINS_command.json"},
+            ],
+            "allowed_commands": [
+                "START_WORKING", "RESET_SYSTEM", "GET_TASK_STATE",
+                "PROCESS_BEGINS", "PROCESS_PAUSED", "PROCESS_RESUMED", "PROCESS_ENDED",
+            ],
+        },
+    }
+
+
+def _load_zhanting_adapter():
+    from programs.ZHANTING import dryrun_adapter, node_handlers
+    return {
+        "display_name": "展厅",
+        "local_flows_dir": os.path.join(_REPO_ROOT, "programs", "ZHANTING", "flows"),
+        "project_node_schemas": node_handlers.NODE_TYPE_SCHEMAS,
+        "common_nodes": node_handlers.COMMON_NODES,
+        "known_handler_types": list(node_handlers.NODE_TYPE_SCHEMAS) + list(node_handlers.COMMON_NODES),
+        "dryrun_adapter": dryrun_adapter,
+        "poses_project": "ZHANTING",
+        "poses_config_dir": os.path.join(_REPO_ROOT, "programs", "ZHANTING"),
+        "robot_options": ["robot_a"],
+        "step_options": node_handlers.STEP_OPTIONS,
+        "service_options": node_handlers.SERVICE_OPTIONS,
+        "command_options": ["PROCESS_BEGINS", "ZHANTING_LOADED"],
+        "exclusive_enabled_flow": True,
+        "run_control": {
+            "hint": "启动连接机器人；流程开始后等待人工上料，放好瓶子再点「上料完成」。实机 active_project 设为 ZHANTING。",
+            "buttons": [
+                {"action": "begin", "text": "启动", "cmd": "START_WORKING", "group": "power"},
+                {"action": "reset_system", "text": "重置系统", "cmd": "RESET_SYSTEM", "group": "power", "confirm": True, "danger": True},
+                {"action": "process_begins", "text": "流程开始", "cmd": "PROCESS_BEGINS", "group": "flow"},
+                {"action": "loaded", "text": "上料完成", "cmd": "ZHANTING_LOADED", "group": "flow",
+                 "hint": "人工放好瓶子后确认，仅在流程等待上料时有效。"},
+                {"action": "pause", "text": "流程暂停", "cmd": "PROCESS_PAUSED", "group": "flow"},
+                {"action": "resume", "text": "流程恢复", "cmd": "PROCESS_RESUMED", "group": "flow"},
+                {"action": "end", "text": "流程结束", "cmd": "PROCESS_ENDED", "group": "flow", "confirm": True},
+            ],
+            "command_templates": [
+                {"label": "PROCESS_BEGINS", "path": "test_commands/PROCESS_BEGINS_command.json"},
+                {"label": "人工上料完成", "path": "test_commands/ZHANTING_LOADED_command.json"},
+            ],
+            "allowed_commands": ["START_WORKING", "RESET_SYSTEM", "GET_TASK_STATE", "PROCESS_BEGINS",
+                                 "ZHANTING_LOADED", "PROCESS_PAUSED", "PROCESS_RESUMED", "PROCESS_ENDED"],
+        },
+    }
+
+
 PROJECT_ADAPTERS = {
     "WRC_FLOW": _load_wrc_flow_adapter,
     "KAIAO_FLOW": _load_kaiao_flow_adapter,
     "CONST_FLOW": _load_const_flow_adapter,
+    "XINXIANG": _load_xinxiang_adapter,
+    "ZHANTING": _load_zhanting_adapter,
 }
 
 # 缓存已加载的 adapter（避免每个请求都重新 import）
@@ -625,6 +731,36 @@ def _read_robot_config(project: str) -> Dict[str, Any]:
     }
 
 
+#: robot_config 里一旦丢掉就起不来的段。整份配置写入是全量覆盖，
+#: 少传一段就等于删掉它，所以对着旧配置比一遍。
+_ROBOT_CONFIG_CRITICAL_KEYS = ("robots", "active_project")
+
+
+def _robot_config_sanity_errors(project: str, cfg: Dict[str, Any]) -> List[str]:
+    """
+    挡住"看起来是误操作"的整份覆盖。
+
+    这个接口是全量覆盖：传 {} 进来就会把现场的机器人地址、端口全部抹掉，
+    系统下次启动直接起不来。虽然写入前会备份，但现场未必知道去哪找备份，
+    所以明显不合理的写入直接拒掉。
+    """
+    errors: List[str] = []
+    if not cfg:
+        return ["配置是空的。整份保存会覆盖现有配置，不能传空对象"]
+    try:
+        # _read_robot_config 返回的是给前端的包装结构，真正的配置在 config 里
+        old = (_read_robot_config(project) or {}).get("config") or {}
+    except Exception:  # noqa: BLE001
+        return errors
+    for key in _ROBOT_CONFIG_CRITICAL_KEYS:
+        if old.get(key) and key not in cfg:
+            errors.append(
+                f"缺少 '{key}' 段，而现有配置里有。整份保存是全量覆盖，"
+                f"少传这一段等于把它删掉"
+            )
+    return errors
+
+
 def _write_robot_config(project: str, cfg: Dict[str, Any]) -> str:
     path = _robot_config_path(project)
     target_dir = os.path.dirname(path)
@@ -654,22 +790,26 @@ def _waypoint_schema_bundle():
     )
     return {
         "key": KAIAO_WAYPOINT_KEY,
+        "title": "走廊导航中间点（kaiao_waypoint）",
         "intro": KAIAO_WAYPOINT_INTRO,
         "fields": KAIAO_WAYPOINT_FIELDS,
         "defaults": kaiao_waypoint_defaults(),
         "comments": kaiao_waypoint_comments(),
         "merge": merge_kaiao_waypoint_config,
+        "log_label": "走廊导航参数",
     }
 
 
-def _read_waypoint_config(adapter: Optional[Dict[str, Any]], project: str) -> Optional[Dict[str, Any]]:
-    """
-    读走廊中间点段。KAIAO_FLOW 与点位相同：外部 /config 优先，否则 programs/KAIAO。
-    """
-    key = (adapter or {}).get("waypoint_config_key")
+def _read_schema_section(
+    adapter: Optional[Dict[str, Any]],
+    project: str,
+    adapter_key: str,
+    bundle: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """读 KAIAO 共用配置段（走廊中间点）。外部 /config 优先，否则 programs/KAIAO。"""
+    key = (adapter or {}).get(adapter_key)
     if not key:
         return None
-    bundle = _waypoint_schema_bundle()
     found_path = _pose_config_path(adapter, project)
     raw: Dict[str, Any] = {}
     _, config_dir = _poses_target(adapter, project)
@@ -680,7 +820,7 @@ def _read_waypoint_config(adapter: Optional[Dict[str, Any]], project: str) -> Op
             with open(path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
         except Exception as e:  # noqa: BLE001
-            logger.warning(_LOG, f"读取走廊导航参数失败 {path}: {e}")
+            logger.warning(_LOG, f"读取{bundle.get('log_label') or key}失败 {path}: {e}")
             continue
         section = cfg.get(key)
         if isinstance(section, dict):
@@ -691,16 +831,21 @@ def _read_waypoint_config(adapter: Optional[Dict[str, Any]], project: str) -> Op
     return {
         "key": key,
         "path": found_path,
+        "title": bundle.get("title") or key,
         "intro": bundle["intro"],
         "schema": bundle["fields"],
         "values": values,
     }
 
 
+def _read_waypoint_config(adapter: Optional[Dict[str, Any]], project: str) -> Optional[Dict[str, Any]]:
+    return _read_schema_section(adapter, project, "waypoint_config_key", _waypoint_schema_bundle())
+
+
 def _validate_waypoint_values(values: Any, schema: List[Dict[str, Any]]) -> List[str]:
     errors: List[str] = []
     if not isinstance(values, dict):
-        return ["走廊导航参数必须是对象"]
+        return ["配置段必须是对象"]
     by_key = {f["key"]: f for f in schema}
     for key, field in by_key.items():
         if key not in values:
@@ -711,6 +856,12 @@ def _validate_waypoint_values(values: Any, schema: List[Dict[str, Any]]) -> List
         if ftype == "number":
             if not isinstance(val, (int, float)) or isinstance(val, bool):
                 errors.append(f"{label}（{key}）必须是数字")
+        elif ftype == "boolean":
+            if not isinstance(val, bool):
+                errors.append(f"{label}（{key}）必须是 true 或 false")
+        elif ftype == "string":
+            if not isinstance(val, str):
+                errors.append(f"{label}（{key}）必须是字符串")
         elif ftype == "string_list":
             if not isinstance(val, list) or not all(isinstance(x, str) and x.strip() for x in val):
                 errors.append(f"{label}（{key}）必须是非空字符串数组，例如 [\"shelf0_3\",\"shelf1_3\"]")
@@ -720,22 +871,24 @@ def _validate_waypoint_values(values: Any, schema: List[Dict[str, Any]]) -> List
     return errors
 
 
-def _write_waypoint_config(
+def _write_schema_section(
     adapter: Optional[Dict[str, Any]],
     project: str,
     values: Dict[str, Any],
+    adapter_key: str,
+    bundle: Dict[str, Any],
 ) -> str:
-    """只改 kaiao_waypoint 段，其余配置原样保留。写入点位同一文件。"""
-    bundle = _waypoint_schema_bundle()
-    key = (adapter or {}).get("waypoint_config_key") or bundle["key"]
+    """只改指定段，其余配置原样保留。写入点位同一文件。"""
+    key = (adapter or {}).get(adapter_key) or bundle["key"]
     path = _pose_config_path(adapter, project)
+    label = bundle.get("log_label") or key
     cfg: Dict[str, Any] = {}
     indent = 4
     if os.path.isfile(path):
         with open(path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
         indent = _detect_json_indent(path)
-        _backup_existing_file(path, "保存走廊导航参数前备份")
+        _backup_existing_file(path, f"保存{label}前备份")
 
     current = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
     merged = bundle["merge"](current)
@@ -759,9 +912,19 @@ def _write_waypoint_config(
         from infrastructure.config_loader import reload_config
         reload_config()
     except Exception as e:  # noqa: BLE001
-        logger.warning(_LOG, f"走廊导航参数已写入但 reload_config 失败: {e}")
-    logger.info(_LOG, f"[{project}] 走廊导航参数已保存 -> {path} 的 {key} 段")
+        logger.warning(_LOG, f"{label}已写入但 reload_config 失败: {e}")
+    logger.info(_LOG, f"[{project}] {label}已保存 -> {path} 的 {key} 段")
     return path
+
+
+def _write_waypoint_config(
+    adapter: Optional[Dict[str, Any]],
+    project: str,
+    values: Dict[str, Any],
+) -> str:
+    return _write_schema_section(
+        adapter, project, values, "waypoint_config_key", _waypoint_schema_bundle(),
+    )
 
 
 def _read_poses(project: str, adapter: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1247,9 +1410,14 @@ def _read_console_log(qs: Dict[str, List[str]]) -> Dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 _MOCK_SCRIPT = os.path.join(_REPO_ROOT, "mock_rosbridge", "mock_rosbridge_server.py")
+_MOCK_HTTP_SCRIPT = os.path.join(_REPO_ROOT, "mock_http", "mock_http_service.py")
+_MOCK_HTTP_HOST = "127.0.0.1"
+_MOCK_HTTP_PORT = 18080
+_MOCK_HTTP_URL = f"http://{_MOCK_HTTP_HOST}:{_MOCK_HTTP_PORT}/"
 _MOCK_READY_TIMEOUT = 6.0
 _owned_mock_lock = threading.Lock()
 _owned_mock_proc: Optional[subprocess.Popen] = None
+_owned_http_mock_proc: Optional[subprocess.Popen] = None
 _mock_keep_alive = False
 _USER_MOCK_PORTS: List[Tuple[str, int]] = [
     ("robot_a", 9090),
@@ -1285,8 +1453,8 @@ def _offline_mock_targets(dryrun_mod) -> List[str]:
     return offline
 
 
-def _find_mock_pids() -> List[int]:
-    """找出本机正在跑的 mock_rosbridge_server.py（不含当前编辑器进程）。"""
+def _find_script_pids(script_name: str) -> List[int]:
+    """找出本机正在跑的指定脚本（不含当前编辑器进程）。"""
     pids: List[int] = []
     my_pid = os.getpid()
     try:
@@ -1304,9 +1472,18 @@ def _find_mock_pids() -> List[int]:
                 cmd = f.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
         except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
             continue
-        if "mock_rosbridge_server.py" in cmd:
+        if script_name in cmd:
             pids.append(pid)
     return pids
+
+
+def _find_mock_pids() -> List[int]:
+    """找出本机正在跑的 mock_rosbridge_server.py（不含当前编辑器进程）。"""
+    return _find_script_pids("mock_rosbridge_server.py")
+
+
+def _http_mock_listening() -> bool:
+    return _tcp_open(_MOCK_HTTP_HOST, _MOCK_HTTP_PORT)
 
 
 def _kill_pids(pids: List[int], timeout: float = 3.0) -> None:
@@ -1366,6 +1543,7 @@ def _mock_status_payload(message: str = "") -> Dict[str, Any]:
     ports = _mock_port_status()
     running = any(p["listening"] for p in ports)
     owned = _mock_owned_alive()
+    http_up = _http_mock_listening()
     payload: Dict[str, Any] = {
         "success": True,
         "running": running,
@@ -1373,15 +1551,24 @@ def _mock_status_payload(message: str = "") -> Dict[str, Any]:
         "keep": _mock_keep_alive,
         "script": _MOCK_SCRIPT,
         "ports": ports,
+        "http": {"url": _MOCK_HTTP_URL, "listening": http_up},
     }
     if message:
-        payload["message"] = message
+        text = message
     elif not running:
-        payload["message"] = "mock 未运行。打开开关将启动 mock_rosbridge_server.py（9090/9091/9092）。"
+        text = (
+            "mock 未运行。打开开关将启动 mock_rosbridge（9090/9091/9092）"
+            f"和机械臂 HTTP mock（{_MOCK_HTTP_URL}）。"
+        )
     elif owned:
-        payload["message"] = "mock 由本面板启动，关闭开关会停掉它。"
+        text = "mock 由本面板启动，关闭开关会停掉 rosbridge 和 HTTP mock。"
     else:
-        payload["message"] = "mock 已在运行（可能是上次残留或别处启动）。关闭开关会停掉本机 mock_rosbridge_server.py。"
+        text = "mock 已在运行（可能是上次残留或别处启动）。关闭开关会停掉本机 mock。"
+    if running and not http_up:
+        text += " HTTP mock 未在听，请关闭开关后再打开一次。"
+    elif http_up and "HTTP" not in text:
+        text += f" HTTP mock: {_MOCK_HTTP_URL}"
+    payload["message"] = text
     return payload
 
 
@@ -1391,15 +1578,68 @@ def _mock_fail(message: str) -> Dict[str, Any]:
     return payload
 
 
+def _ensure_editor_http_mock() -> Optional[str]:
+    """运行控制开关附带拉起机械臂 HTTP mock。已在听则复用。返回错误信息或 None。"""
+    global _owned_http_mock_proc
+    if _http_mock_listening():
+        if _find_script_pids("mock_http_service.py"):
+            return None
+        return f"HTTP mock 端口 {_MOCK_HTTP_PORT} 已被其他进程占用，无法启动 mock_http_service。"
+    if not os.path.isfile(_MOCK_HTTP_SCRIPT):
+        return f"找不到 HTTP mock 脚本: {_MOCK_HTTP_SCRIPT}"
+    cmd = [sys.executable, _MOCK_HTTP_SCRIPT, "--host", _MOCK_HTTP_HOST, "--port", str(_MOCK_HTTP_PORT)]
+    logger.info(_LOG, "面板启动 HTTP mock: " + " ".join(cmd))
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=_REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return f"启动 HTTP mock 失败: {e}"
+    with _owned_mock_lock:
+        _owned_http_mock_proc = proc
+    deadline = time.time() + _MOCK_READY_TIMEOUT
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return f"HTTP mock 启动后立刻退出（exit={proc.returncode}）。请检查端口 {_MOCK_HTTP_PORT}。"
+        if _http_mock_listening():
+            return None
+        time.sleep(0.15)
+    return f"已启动 HTTP mock 但 {_MOCK_READY_TIMEOUT:.0f}s 内 {_MOCK_HTTP_URL} 仍不可达"
+
+
+def _stop_editor_http_mock() -> None:
+    global _owned_http_mock_proc
+    pids = set(_find_script_pids("mock_http_service.py"))
+    with _owned_mock_lock:
+        proc = _owned_http_mock_proc
+        _owned_http_mock_proc = None
+    if proc is not None and proc.poll() is None:
+        pids.add(proc.pid)
+    if pids:
+        logger.info(_LOG, f"面板关闭 HTTP mock pids={sorted(pids)}")
+        _kill_pids(sorted(pids))
+
+
+def _finish_editor_mock(message: str) -> Dict[str, Any]:
+    err = _ensure_editor_http_mock()
+    if err:
+        return _mock_fail(err)
+    return _mock_status_payload(message)
+
+
 def _start_editor_mock() -> Dict[str, Any]:
-    """运行控制开关：拉起默认三端口 mock，并标记为保持，演练结束也不关。"""
+    """运行控制开关：拉起默认三端口 mock 和 HTTP mock，演练结束也不关。"""
     global _mock_keep_alive, _owned_mock_proc
     if _mock_owned_alive():
         _mock_keep_alive = True
-        return _mock_status_payload("mock 已在运行")
+        return _finish_editor_mock("mock 已在运行")
     ports = _mock_port_status()
     if all(p["listening"] for p in ports):
-        return _mock_status_payload("mock 已在运行")
+        return _finish_editor_mock("mock 已在运行")
     if any(p["listening"] for p in ports):
         listening = ", ".join(f"{p['robot_id']}:{p['port']}" for p in ports if p["listening"])
         return _mock_fail(f"部分端口已被占用（{listening}），无法再启动一份 mock。")
@@ -1432,7 +1672,7 @@ def _start_editor_mock() -> Dict[str, Any]:
                 f"mock 进程启动后立刻退出（exit={proc.returncode}）。请检查端口是否被占用。"
             )
         if all(_tcp_open("127.0.0.1", port) for _, port in _USER_MOCK_PORTS):
-            return _mock_status_payload("mock 已启动")
+            return _finish_editor_mock("mock 已启动")
         time.sleep(0.15)
 
     missing = [f"{rid}:{port}" for rid, port in _USER_MOCK_PORTS if not _tcp_open("127.0.0.1", port)]
@@ -1442,9 +1682,10 @@ def _start_editor_mock() -> Dict[str, Any]:
 
 
 def _stop_editor_mock() -> Dict[str, Any]:
-    """面板关闭开关：停掉本面板启动的 mock，以及本机残留的 mock_rosbridge_server.py。"""
+    """面板关闭开关：停掉 rosbridge mock 和机械臂 HTTP mock。"""
     global _mock_keep_alive
     _mock_keep_alive = False
+    _stop_editor_http_mock()
     pids = set(_find_mock_pids())
     with _owned_mock_lock:
         proc = _owned_mock_proc
@@ -1458,8 +1699,10 @@ def _stop_editor_mock() -> Dict[str, Any]:
     while time.time() < deadline and any(p["listening"] for p in _mock_port_status()):
         time.sleep(0.1)
     leftover = [p for p in _mock_port_status() if p["listening"]]
-    if leftover:
+    if leftover or _http_mock_listening():
         still = ", ".join(f"{p['robot_id']}:{p['port']}" for p in leftover)
+        if _http_mock_listening():
+            still = (still + ", " if still else "") + f"http:{_MOCK_HTTP_PORT}"
         return _mock_fail(f"已发停止信号，但仍有端口在听（{still}）。可能被真机 rosbridge 占用。")
     return _mock_status_payload("已关闭 mock")
 
@@ -1774,7 +2017,123 @@ def _run_dryrun(adapter: Dict[str, Any], graph: Dict[str, Any], timeout: float =
 # HTTP handler
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 接口权限表
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# 按"方法 + 路径形状"给每个接口标一个权限点，请求进来先过一遍 _require()。
+# 只在前端隐藏按钮是不够的——会用 curl 的人直接绕过，所以拦截必须在后端。
+#
+# 路径形状里 <p> 是项目名，<id> 是流程 id。带项目的写操作会再查一次项目范围：
+# 开发者只能动 allowed_projects 里的项目，别的项目一律只读。
+#
+# 静态资源（编辑器页面本身）和 /api/auth/* 不在表里，任何人可访问，
+# 否则登录页都加载不出来。
+
+_PERM_GET = {
+    "projects": None,                      # 项目列表：进页面就要用
+    "console": Perm.VIEW,
+    "mock-rosbridge": Perm.VIEW,
+    "node-types": Perm.VIEW,
+    "flows": Perm.VIEW,
+    "flow": Perm.VIEW,                     # flows/<id>
+    "poses": Perm.VIEW,
+    "run-control": Perm.VIEW,
+    "runtime-state": Perm.VIEW,
+    "robot-config": Perm.VIEW,             # 只读看配置；改要 EDIT_ROBOT_CONFIG
+    "current-pose": Perm.VIEW,
+    "export": Perm.IMPORT_EXPORT,
+}
+
+_PERM_POST = {
+    "mock-rosbridge": Perm.DRYRUN,         # 起/停演练用的 mock 服务
+    "dryrun-cancel": Perm.DRYRUN,
+    "import": Perm.IMPORT_EXPORT,
+    "flow-save": Perm.EDIT_FLOW,           # flows/<id>
+    "flow-enabled": Perm.EDIT_FLOW,        # flows/<id>/enabled
+    "flow-validate": Perm.VIEW,            # 纯校验，无副作用
+    "flow-dryrun": Perm.DRYRUN,
+    "poses": Perm.EDIT_POSES,
+    "current-pose": Perm.EDIT_POSES,       # 把机器人当前位姿写成点位
+    "robot-config": Perm.EDIT_ROBOT_CONFIG,
+    "control": Perm.RUN_CONTROL,           # 启停真实调度：使用者也可以
+}
+
+
+def _post_action_key(parts: List[str]) -> Optional[str]:
+    """把 /api/projects/<p>/... 的 POST 路径归一成 _PERM_POST 的键。"""
+    if len(parts) == 2:
+        return {"import": "import", "poses": "poses",
+                "robot-config": "robot-config"}.get(parts[1])
+    if len(parts) == 3:
+        if parts[1] == "flows":
+            return "flow-save"
+        if parts[1] == "poses" and parts[2] == "current":
+            return "current-pose"
+        if parts[1] == "control":
+            return "control"
+    if len(parts) == 4 and parts[1] == "flows":
+        return {"enabled": "flow-enabled", "validate": "flow-validate",
+                "dryrun": "flow-dryrun"}.get(parts[3])
+    return None
+
+
+def _get_action_key(parts: List[str]) -> Optional[str]:
+    if len(parts) == 2:
+        return parts[1] if parts[1] in _PERM_GET else None
+    if len(parts) == 3:
+        if parts[1] == "flows":
+            return "flow"
+        if parts[1] == "poses" and parts[2] == "current":
+            return "current-pose"
+    return None
+
+
 class FlowAPIHandler(BaseHTTPRequestHandler):
+
+    # ── 鉴权 ─────────────────────────────────────────────────────────────────
+
+    def _principal(self):
+        """本次请求的身份。没带 token 就是匿名使用者，不是错误。"""
+        token = self.headers.get("X-Auth-Token") or ""
+        if not token:
+            auth = self.headers.get("Authorization") or ""
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+        return principal_for_token(token)
+
+    def _require(self, perm: Optional[str], project: Optional[str] = None) -> bool:
+        """
+        校验权限。够就返回 True；不够则已经把 403 发出去了，调用方直接 return。
+
+        perm 为 None 表示不设限（项目列表这类进页面就要用的接口）。
+        """
+        if perm is None:
+            return True
+        principal = self._principal()
+        if principal.can(perm, project):
+            return True
+        if perm in PROJECT_SCOPED_PERMS and project and principal.can(perm):
+            # 权限本身有，只是这个项目没授权——分开提示，否则用户以为是没登录
+            message = (
+                f"当前身份（{principal.role_label}）没有项目 {project} 的修改权限。"
+                f"已授权的项目：{', '.join(principal.allowed_projects) or '无'}"
+            )
+        elif principal.is_anonymous:
+            message = f"该操作需要登录（当前为{principal.role_label}，未登录）"
+        else:
+            message = f"当前身份（{principal.role_label}）没有此操作的权限"
+        logger.warning(
+            _LOG,
+            f"拒绝越权操作: {self.command} {self.path} "
+            f"身份={principal.name or '匿名'}({principal.role}) 需要={perm}",
+        )
+        self._send_json({
+            "success": False, "message": message,
+            "error": "forbidden", "required_permission": perm,
+            "principal": principal.describe(),
+        }, 403)
+        return False
 
     def _send_json(self, payload: Dict[str, Any], status: int = 200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1859,7 +2218,7 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Auth-Token, Authorization")
         self.end_headers()
 
     # ── GET ──────────────────────────────────────────────────────────────────
@@ -1871,13 +2230,35 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             robot_id = (qs.get("robot_id") or ["robot_a"])[0]
 
+            # 身份查询：前端据此显示当前角色、隐藏没权限的按钮。任何人可访问
+            if path == "/api/auth/whoami":
+                principal = self._principal()
+                return self._send_json({
+                    "success": True,
+                    "principal": principal.describe(),
+                    "login_required": has_any_account(),
+                    "login_mode": auth_login_mode(),
+                    "session_timeout_minutes": load_auth_config().get(
+                        "session_timeout_minutes", 480),
+                    "roles": ROLE_LABELS,
+                })
+
             if path == "/api/projects":
-                return self._send_json({"success": True, "projects": list(PROJECT_ADAPTERS.keys())})
+                from infrastructure.pose_loader import get_active_project
+                return self._send_json({
+                    "success": True,
+                    "projects": list(PROJECT_ADAPTERS.keys()),
+                    "active_project": get_active_project() or "",
+                })
 
             if path == "/api/console":
+                if not self._require(_PERM_GET["console"]):
+                    return
                 return self._send_json(_read_console_log(qs))
 
             if path == "/api/mock-rosbridge":
+                if not self._require(_PERM_GET["mock-rosbridge"]):
+                    return
                 return self._send_json(_mock_status_payload())
 
             if path.startswith("/api/projects/"):
@@ -1886,6 +2267,9 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                 adapter = _get_adapter(project)
                 if adapter is None:
                     return self._send_json({"success": False, "message": f"未知项目: {project}"}, 404)
+
+                if not self._require(_PERM_GET.get(_get_action_key(parts), Perm.VIEW), project):
+                    return
 
                 if len(parts) == 2 and parts[1] == "node-types":
                     return self._send_json({
@@ -1958,7 +2342,51 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             path = parsed.path
+
+            # 登录/登出：任何人可访问，否则没法提权
+            if path == "/api/auth/login":
+                body = self._read_json_body()
+                name = str((body or {}).get("name") or "").strip()
+                password = str((body or {}).get("password") or "")
+                mode = str((body or {}).get("mode") or "").strip()
+                available = auth_login_mode()
+                if mode not in ("key", "user"):
+                    mode = "key" if not name else "user"
+                if available == "off":
+                    return self._send_json({"success": False, "message": "权限管理未启用"}, 400)
+                if mode == "key" and available == "user":
+                    return self._send_json(
+                        {"success": False, "message": "未配置口令登录，请用账号登录"}, 400)
+                if mode == "user" and available == "key":
+                    return self._send_json(
+                        {"success": False, "message": "未配置账号登录，请用口令登录"}, 400)
+                if not password:
+                    return self._send_json({"success": False, "message": "请填口令"}, 400)
+                if mode == "user" and not name:
+                    return self._send_json({"success": False, "message": "请填账号和口令"}, 400)
+                if mode == "key":
+                    name = ""
+                token = auth_login(name, password)
+                if not token:
+                    return self._send_json(
+                        {"success": False,
+                         "message": "口令不正确" if mode == "key" else "账号或口令不正确"}, 401)
+                principal = principal_for_token(token)
+                return self._send_json({
+                    "success": True, "token": token,
+                    "principal": principal.describe(),
+                })
+
+            if path == "/api/auth/logout":
+                token = self.headers.get("X-Auth-Token") or ""
+                auth_logout(token)
+                return self._send_json({
+                    "success": True, "principal": self._principal().describe(),
+                })
+
             if path == "/api/mock-rosbridge":
+                if not self._require(_PERM_POST["mock-rosbridge"]):
+                    return
                 body = self._read_json_body()
                 enabled = body.get("enabled")
                 if enabled is True:
@@ -1969,6 +2397,8 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                     {"success": False, "message": "请传 {\"enabled\": true} 或 {\"enabled\": false}"}, 400)
 
             if path == "/api/dryrun/cancel":
+                if not self._require(_PERM_POST["dryrun-cancel"]):
+                    return
                 cancelled = _cancel_active_dryrun()
                 return self._send_json({
                     "success": True,
@@ -1984,6 +2414,12 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
             adapter = _get_adapter(project)
             if adapter is None:
                 return self._send_json({"success": False, "message": f"未知项目: {project}"}, 404)
+
+            action = _post_action_key(parts)
+            if action is None:
+                return self._send_json({"success": False, "message": f"Not Found: {path}"}, 404)
+            if not self._require(_PERM_POST[action], project):
+                return
 
             if len(parts) == 2 and parts[1] == "import":
                 body = self._read_json_body()
@@ -2007,6 +2443,11 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                     disabled = []
                     if enabled and adapter.get("exclusive_enabled_flow"):
                         disabled = _disable_other_enabled_flows(adapter, flow_id)
+                    who = self._principal()
+                    logger.info(
+                        _LOG,
+                        f"流程 '{flow_id}' 激活={enabled} 由 {who.name or '匿名'}({who.role})",
+                    )
                     return self._send_json({
                         "success": True, "path": saved_path, "enabled": enabled,
                         "disabled": disabled,
@@ -2052,6 +2493,11 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                     saved_path = _write_flow(adapter, flow_id, graph)
                     if graph.get("enabled") and adapter.get("exclusive_enabled_flow"):
                         _disable_other_enabled_flows(adapter, flow_id)
+                    who = self._principal()
+                    logger.info(
+                        _LOG,
+                        f"流程 '{flow_id}' 由 {who.name or '匿名'}({who.role}) 保存",
+                    )
                     return self._send_json({"success": True, "message": "保存成功", "path": saved_path})
 
             if self._is_current_pose_path(parts):
@@ -2070,6 +2516,11 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                     return self._send_json(
                         {"success": False, "message": "点位格式校验未通过，未保存", "errors": errors}, 400)
                 saved_path = _write_poses(project, poses, adapter)
+                who = self._principal()
+                logger.info(
+                    _LOG,
+                    f"[{project}] 点位由 {who.name or '匿名'}({who.role}) 保存",
+                )
                 return self._send_json({
                     "success": True, "path": saved_path,
                     "message": ("点位已保存。注意：正在运行的主程序仍在用启动时加载的旧点位，"
@@ -2082,6 +2533,11 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                 if not isinstance(cfg, dict):
                     return self._send_json(
                         {"success": False, "message": "配置必须是 JSON 对象"}, 400)
+                sanity = _robot_config_sanity_errors(project, cfg)
+                if sanity:
+                    return self._send_json(
+                        {"success": False, "message": "配置像是被清空了，未保存",
+                         "errors": sanity}, 400)
                 wp_key = (adapter or {}).get("waypoint_config_key")
                 waypoint = body.get("waypoint") if isinstance(body.get("waypoint"), dict) else None
                 if wp_key and wp_key in cfg:
@@ -2092,8 +2548,7 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                     if not wp_key:
                         return self._send_json(
                             {"success": False, "message": "本项目没有走廊导航参数段，请不要提交 waypoint"}, 400)
-                    bundle = _waypoint_schema_bundle()
-                    errors = _validate_waypoint_values(waypoint, bundle["fields"])
+                    errors = _validate_waypoint_values(waypoint, _waypoint_schema_bundle()["fields"])
                     if errors:
                         return self._send_json(
                             {"success": False, "message": "走廊导航参数校验未通过，未保存",
@@ -2107,7 +2562,8 @@ class FlowAPIHandler(BaseHTTPRequestHandler):
                 if wp_path and wp_path != saved_path:
                     msg += f" 走廊导航参数写在 {wp_path}。"
                 return self._send_json({
-                    "success": True, "path": saved_path, "waypoint_path": wp_path,
+                    "success": True, "path": saved_path,
+                    "waypoint_path": wp_path,
                     "message": msg,
                 })
 
@@ -2191,6 +2647,9 @@ class FlowAPIServer:
         logger.info(_LOG, f"Flow API 服务器启动成功: {self.host}:{self.port}")
         print(f"图形化流程编辑器运行在: http://{self.host}:{self.port}/  "
               f"（API 前缀 /api/projects/<project>/...，与命令端口完全分开）")
+        auth_status = auth_status_line()
+        print(auth_status)
+        logger.info(_LOG, auth_status)
 
     def _log_port_in_use(self):
         msg = (

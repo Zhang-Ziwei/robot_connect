@@ -1,0 +1,212 @@
+{
+  "id": "xinxiang_main",
+  "name": "定量分液检测主流程",
+  "description": "先等 PROCESS_BEGINS，再试管1，然后试管2与检测放料位移并行，汇合后检测启动 → 检测取料位移 → 检测取料完成。操作走 /robot_task。图上没把最后一步连回开头时，跑完即停。",
+  "start": "n_wait_begin",
+  "enabled": true,
+  "nodes": [
+    {
+      "id": "n_wait_begin",
+      "type": "wait_for_command",
+      "label": "等待外部命令",
+      "params": {
+        "event_name": "PROCESS_BEGINS"
+      },
+      "x": 22,
+      "y": 217
+    },
+    {
+      "id": "n_begin",
+      "type": "update_step",
+      "label": "开始一轮",
+      "params": {
+        "step": "定量分液",
+        "message": "定量分液与检测放料位移并行",
+        "robot_id": "robot_a"
+      },
+      "x": 224,
+      "y": 212
+    },
+    {
+      "id": "n_parallel",
+      "type": "parallel",
+      "label": "并行：定量分液 + 检测放料位移",
+      "params": {
+        "branches": [
+          "n_dispense",
+          "n_detect_dispense"
+        ]
+      },
+      "x": 639,
+      "y": 200
+    },
+    {
+      "id": "n_dispense",
+      "type": "send_operation",
+      "label": "放料操作，试管2",
+      "params": {
+        "call_type": "action",
+        "service": "robot_task",
+        "task": "pure_water",
+        "extra_params": {
+          "cube": 2
+        },
+        "robot_id": "robot_a",
+        "timeout": 1200
+      },
+      "x": 926,
+      "y": 126
+    },
+    {
+      "id": "n_detect_dispense",
+      "type": "xinxiang_detect",
+      "label": "检测模块放料位移",
+      "params": {
+        "step": "dispense",
+        "timeout": 120
+      },
+      "x": 943,
+      "y": 284
+    },
+    {
+      "id": "n_join",
+      "type": "noop",
+      "label": "汇合",
+      "params": {
+        "join": "all"
+      },
+      "x": 1186,
+      "y": 208
+    },
+    {
+      "id": "n_place",
+      "type": "send_operation",
+      "label": "放料操作，试管1",
+      "params": {
+        "call_type": "action",
+        "service": "robot_task",
+        "task": "pure_water",
+        "extra_params": {
+          "cube": 1
+        },
+        "robot_id": "robot_a",
+        "timeout": 1200
+      },
+      "x": 428,
+      "y": 216
+    },
+    {
+      "id": "n_detect_start",
+      "type": "xinxiang_detect",
+      "label": "检测模块启动",
+      "params": {
+        "step": "start",
+        "timeout": 120
+      },
+      "x": 1440,
+      "y": 203
+    },
+    {
+      "id": "n_detect_pick",
+      "type": "xinxiang_detect",
+      "label": "检测模块取料位移",
+      "params": {
+        "step": "pick",
+        "timeout": 120
+      },
+      "x": 1664,
+      "y": 202
+    },
+    {
+      "id": "n_detect_finish",
+      "type": "xinxiang_detect",
+      "label": "检测模块取料完成",
+      "params": {
+        "step": "finish",
+        "timeout": 120
+      },
+      "x": 1900,
+      "y": 200
+    },
+    {
+      "id": "n_done",
+      "type": "update_step",
+      "label": "全流程结束",
+      "params": {
+        "step": "完成",
+        "message": "本轮定量分液检测完成",
+        "robot_id": "robot_a"
+      },
+      "x": 2120,
+      "y": 200
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_wait_begin",
+      "source": "n_wait_begin",
+      "target": "n_begin",
+      "when": "success"
+    },
+    {
+      "id": "e_par_dispense",
+      "source": "n_parallel",
+      "target": "n_dispense",
+      "when": "branch"
+    },
+    {
+      "id": "e_par_detect",
+      "source": "n_parallel",
+      "target": "n_detect_dispense",
+      "when": "branch"
+    },
+    {
+      "id": "e_dispense_join",
+      "source": "n_dispense",
+      "target": "n_join",
+      "when": "success"
+    },
+    {
+      "id": "e_detect_join",
+      "source": "n_detect_dispense",
+      "target": "n_join",
+      "when": "success"
+    },
+    {
+      "id": "e_start_pickpos",
+      "source": "n_detect_start",
+      "target": "n_detect_pick",
+      "when": "success"
+    },
+    {
+      "id": "e_finish_done",
+      "source": "n_detect_finish",
+      "target": "n_done",
+      "when": "success"
+    },
+    {
+      "id": "e_1790070605226",
+      "source": "n_begin",
+      "target": "n_place",
+      "when": "default"
+    },
+    {
+      "id": "e_1790070607682",
+      "source": "n_place",
+      "target": "n_parallel",
+      "when": "success"
+    },
+    {
+      "id": "e_1790070620660",
+      "source": "n_join",
+      "target": "n_detect_start",
+      "when": "default"
+    },
+    {
+      "id": "e_1790070626570",
+      "source": "n_detect_pick",
+      "target": "n_detect_finish",
+      "when": "success"
+    }
+  ]
+}

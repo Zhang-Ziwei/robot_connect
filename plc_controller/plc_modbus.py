@@ -32,7 +32,17 @@ class PLCServer:
             PLCHoldingRegisters.OPEN_LID_STATE: "开盖模块状态",
             PLCHoldingRegisters.CLEAN_STATE: "清洗模块状态",
             PLCHoldingRegisters.DETECT_STATE: "检测模块状态",
-            PLCHoldingRegisters.CLOSE_LID_STATE: "关盖模块状态"
+            PLCHoldingRegisters.CLOSE_LID_STATE: "关盖模块状态",
+            PLCHoldingRegisters.DEVICE_STATUS: "设备状态显示",
+            PLCHoldingRegisters.OPEN_CLOSE_FLOW: "开关盖流程",
+            PLCHoldingRegisters.DETECT_FLOW: "分析检测流程",
+            PLCHoldingRegisters.CLEAN_FLOW: "翻转清洗流程",
+            PLCHoldingRegisters.SERVO_OPEN_UD: "开盖上下伺服",
+            PLCHoldingRegisters.SERVO_OPEN_TELESCOPE: "开盖伸缩伺服",
+            PLCHoldingRegisters.SERVO_DETECT_UD: "检测上下步进",
+            PLCHoldingRegisters.SERVO_DETECT_TURNTABLE: "检测转盘伺服",
+            PLCHoldingRegisters.SERVO_CLEAN_UD: "清洗上下伺服",
+            PLCHoldingRegisters.SERVO_CLEAN_ROTATE: "清洗旋转伺服",
         }
         return register_names.get(reg_idx, f"保持寄存器{reg_idx}")
     
